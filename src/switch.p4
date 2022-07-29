@@ -22,8 +22,8 @@ const ip4_addr_t LAN_ADDR_END = 0xC0A80C00;// not included
 const ip4_addr_t NAT_ADDR = 0x0A010101;// 10.1.1.1
 
 const port_t PORT_MIN = 10000;
-const bit<32> PORT_MAX = 65536;// not included
-const port_t SWITCH_PORT_NUM = 50000;
+const bit<32> PORT_MAX = 10010;//65536;// not included
+const port_t SWITCH_PORT_NUM = 5;//50000;
 const port_t NFV_PORT_NUM = (port_t)(PORT_MAX - (bit<32>)PORT_MIN) - SWITCH_PORT_NUM;
 
 const time_t aging_time_us = 1000 * 1000;// 1 s
@@ -40,7 +40,7 @@ header ethernet_t {
 
 header ipv4_t {
     bit<4>    version;
-    bit<4>    ihl;// set to 15 if we need options field (which is 40 bytes), otherwise 5
+    bit<4>    ihl;
     bit<8>    unused1;
     bit<16>   total_length;
     bit<32>   unused2;
@@ -134,7 +134,7 @@ struct metadata {
     bit<16>         L4_length;
 }
 
-enum bit<16> message_type {
+enum bit<16> message_t {
     null = 0,
     timeout = 1,
     require_update = 2,
@@ -144,7 +144,7 @@ enum bit<16> message_type {
 
 header update_t {//20
     map_entry_t map;
-    message_type type;
+    message_t type;
     /* 
     0: sw->NFV, nothing special, with payload
     1: sw->NFV, "map" has timeout, with payload
@@ -366,7 +366,8 @@ control MyIngress(inout headers hdr,
             && !(LAN_ADDR_START <= hdr.ipv4.dst_addr && hdr.ipv4.dst_addr < LAN_ADDR_END))
             meta.type = transition_type.in2out;
         else if(!(LAN_ADDR_START <= hdr.ipv4.src_addr && hdr.ipv4.src_addr < LAN_ADDR_END)
-            && hdr.ipv4.dst_addr == NAT_ADDR)
+            //&& hdr.ipv4.dst_addr == NAT_ADDR
+            )
             meta.type = transition_type.out2in;
         else 
             meta.type = transition_type.ignore;
@@ -430,7 +431,7 @@ control MyIngress(inout headers hdr,
 
     action set_update() {
         hdr.update.setValid();
-        hdr.update = {meta.entry.map, meta.primary_timeout? message_type.timeout: message_type.null, 0};
+        hdr.update = {meta.entry.map, meta.primary_timeout? message_t.timeout: message_t.null, 0};
     }
 
     action send_to_NFV() {
@@ -451,6 +452,14 @@ control MyIngress(inout headers hdr,
                 ip4_addr_t src_addr = hdr.ipv4.src_addr;
                 bit<8> protocol = hdr.ipv4.protocol;
 
+                if(eport <= PORT_MIN || eport >= PORT_MIN + SWITCH_PORT_NUM) {
+                    ip2port_dmac.apply();
+                }
+                else {
+
+
+
+                
                 if(eport <= PORT_MIN) {
                     drop();
                     return;
@@ -481,8 +490,12 @@ control MyIngress(inout headers hdr,
 
                 reverse_translate();
                 ip2port_dmac.apply();
+
+
+                }
             }
             transition_type.in2out : {
+                
                 get_id();
                 get_index();
                 get_time();
@@ -512,14 +525,18 @@ control MyIngress(inout headers hdr,
                     meta.entry.secondary_time = meta.time;
 
                     map_write(meta.index, meta.entry);
-                    set_update();
-                    send_to_NFV();
+                    
+                    //set_update();
+                    //send_to_NFV();
+                    
+                    ip2port_dmac.apply();
                 } 
             }
             transition_type.fromNFV : {
-                
+                assert(false);
             }
             default : {
+                assert(false);
                 drop();
             }
         }
