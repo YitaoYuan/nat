@@ -1,6 +1,7 @@
 /* -*- P4_16 -*- */
 #include <core.p4>
 #include <v1model.p4>
+#include "shared_metadata.h"
 
 typedef bit<9>  egress_spec_t;
 typedef bit<48> mac_addr_t;
@@ -17,16 +18,16 @@ const bit<16> TYPE_IPV4 = 0x800;
 const bit<16> TYPE_UPDATE = 0x88B5;
 
 //you can change these by tables to support dynamic & multiple LAN address allocation
-const ip4_addr_t LAN_ADDR_START = 0xC0A80B00;// 192.168.11.0
-const ip4_addr_t LAN_ADDR_END = 0xC0A80C00;// not included
-const ip4_addr_t NAT_ADDR = 0x0A010101;// 10.1.1.1
+const ip4_addr_t LAN_ADDR_START = SHARED_LAN_ADDR_START;// 192.168.11.0
+const ip4_addr_t LAN_ADDR_END = SHARED_LAN_ADDR_END;// not included
+const ip4_addr_t NAT_ADDR = SHARED_NAT_ADDR;// 10.1.1.1
 
-const port_t PORT_MIN = 10000;
-const bit<32> PORT_MAX = 10010;//65536;// not included
-const port_t SWITCH_PORT_NUM = 5;//50000;
+const port_t PORT_MIN = SHARED_PORT_MIN;
+const bit<32> PORT_MAX = SHARED_PORT_MAX;//65536;// not included
+const port_t SWITCH_PORT_NUM = SHARED_SWITCH_PORT_NUM;//50000;
 const port_t NFV_PORT_NUM = (port_t)(PORT_MAX - (bit<32>)PORT_MIN) - SWITCH_PORT_NUM;
 
-const time_t aging_time_us = 1000 * 1000;// 1 s
+const time_t AGING_TIME_US = SHARED_AGING_TIME_US;// 1 s
 
 /*************************************************************************
 *********************** H E A D E R S  ***********************************
@@ -142,8 +143,9 @@ enum bit<16> message_t {
     reject_update = 4
 }
 
-header update_t {//20
-    map_entry_t map;
+header update_t {//36
+    map_entry_t primary_map;
+    map_entry_t secondary_map;
     message_t type;
     /* 
     0: sw->NFV, nothing special, with payload
@@ -233,12 +235,20 @@ control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
     apply {
         
         verify_checksum(meta.verify_update, 
-            {hdr.update.map.id.src_addr, 
-            hdr.update.map.id.dst_addr, 
-            hdr.update.map.id.src_port, 
-            hdr.update.map.id.dst_port, 
-            hdr.update.map.id.protocol,
-            hdr.update.map.id.zero,
+            {hdr.update.map.primary_map.src_addr, 
+            hdr.update.map.primary_map.dst_addr, 
+            hdr.update.map.primary_map.src_port, 
+            hdr.update.map.primary_map.dst_port, 
+            hdr.update.map.primary_map.protocol,
+            hdr.update.map.primary_map.zero,
+
+            hdr.update.map.secondary_map.src_addr, 
+            hdr.update.map.secondary_map.dst_addr, 
+            hdr.update.map.secondary_map.src_port, 
+            hdr.update.map.secondary_map.dst_port, 
+            hdr.update.map.secondary_map.protocol,
+            hdr.update.map.secondary_map.zero,
+
             hdr.update.type},
             hdr.update.checksum, HashAlgorithm.csum16);
 
@@ -408,8 +418,8 @@ control MyIngress(inout headers hdr,
     action read_entry() {
         map_read(meta.entry, meta.index);
 
-        meta.primary_timeout = meta.time - meta.entry.primary_time > aging_time_us;
-        meta.secondary_timeout = meta.time - meta.entry.secondary_time > aging_time_us;
+        meta.primary_timeout = meta.time - meta.entry.primary_time > AGING_TIME_US;
+        meta.secondary_timeout = meta.time - meta.entry.secondary_time > AGING_TIME_US;
         meta.match = meta.entry.map.id == meta.id;
     }
 
@@ -444,9 +454,15 @@ control MyIngress(inout headers hdr,
             return;
         }
 
+        // TODO******************************************************************
+        // 还需要判断下DSTMAC是不是本地端口的MAC
+
+
         get_transition_type();
         switch (meta.type) {
             transition_type.out2in : {
+                if(hdr.ipv4.dst_addr != NAT_ADDR) return;
+
                 port_t eport = meta.is_tcp? hdr.L4_header.tcp.dst_port : hdr.L4_header.udp.dst_port;
                 port_t src_port = meta.is_tcp? hdr.L4_header.tcp.src_port : hdr.L4_header.udp.src_port;
                 ip4_addr_t src_addr = hdr.ipv4.src_addr;
@@ -460,7 +476,7 @@ control MyIngress(inout headers hdr,
 
 
                 
-                if(eport <= PORT_MIN) {
+                if(eport <= PORT_MIN || (bit<32>)eport >= PORT_MAX) {
                     drop();
                     return;
                 }
@@ -481,7 +497,7 @@ control MyIngress(inout headers hdr,
                 ipv4_flow_id_t map_id = meta.entry.map.id;
                 get_time();
                 if({map_id.dst_addr, map_id.dst_port, map_id.protocol} != {src_addr, src_port, protocol}
-                    || meta.time - meta.entry.primary_time > aging_time_us) {// miss match or aging
+                    || meta.time - meta.entry.primary_time > AGING_TIME_US) {// mismatch or aging
                     drop();
                     return;
                 }
@@ -583,12 +599,20 @@ control MyComputeChecksum(inout headers hdr, inout metadata meta) {
     apply {
         
         update_checksum(meta.update_update, 
-            {hdr.update.map.id.src_addr, 
-            hdr.update.map.id.dst_addr, 
-            hdr.update.map.id.src_port, 
-            hdr.update.map.id.dst_port, 
-            hdr.update.map.id.protocol,
-            hdr.update.map.id.zero,
+            {hdr.update.map.primary_map.src_addr, 
+            hdr.update.map.primary_map.dst_addr, 
+            hdr.update.map.primary_map.src_port, 
+            hdr.update.map.primary_map.dst_port, 
+            hdr.update.map.primary_map.protocol,
+            hdr.update.map.primary_map.zero,
+
+            hdr.update.map.secondary_map.src_addr, 
+            hdr.update.map.secondary_map.dst_addr, 
+            hdr.update.map.secondary_map.src_port, 
+            hdr.update.map.secondary_map.dst_port, 
+            hdr.update.map.secondary_map.protocol,
+            hdr.update.map.secondary_map.zero,
+
             hdr.update.type},
             hdr.update.checksum, HashAlgorithm.csum16);
 
