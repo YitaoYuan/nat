@@ -24,7 +24,7 @@ typedef unsigned int u32;
 typedef unsigned long long u64;
 
 /*
- * Without special specification, all value in these structs are in network byte order
+ * Without additional specification, all value in these structs are in network byte order
  */
 struct ethernet_t{
     u8 dst_addr[6];
@@ -225,19 +225,19 @@ void forward_process(mytime_t timestamp, len_t packet_len, forward_hdr_t * const
     }
     else return;
 
-    if(verify_checksum(hdr) != 0) return;// THIS FAILED !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    if(verify_checksum(hdr) != 0) return;
 
 // allocate flow state for new flow
     update_t &update = hdr->update;
     // things in map are in network byte order
-    auto ins = map.insert(make_pair(update.secondary_map.id, (map_val_t){0, 0}));
-    auto it = ins.first;
-    if(ins.second) {// a new flow
+    auto it = map.find(update.secondary_map.id);
+    if(it == map.end()) {// a new flow
         if(free_port.empty()) return;// no port available, drop
         port_t eport_host = free_port.front();// host
         free_port.pop();
 
-        it->second = (map_val_t){eport_host/*h*/, timestamp/*h*/};
+        it = map.insert(make_pair(update.secondary_map.id,
+                (map_val_t){eport_host/*h*/, timestamp/*h*/})).first;
 
         reverse_map[eport_host - PORT_MIN] = update.secondary_map.id;
     }
@@ -353,7 +353,7 @@ void nat_process(mytime_t timestamp, len_t packet_len, forward_hdr_t * hdr)
 
 void pcap_handle(u_char *user, const struct pcap_pkthdr *h, const u_char *bytes)
 {
-    fprintf(stderr, "1\n");
+    fprintf(stderr, "a packet\n");
     //h->ts.tv_sec/tv_usec
     //h->caplen
     //h->len

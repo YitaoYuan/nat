@@ -451,8 +451,6 @@ control MyIngress(inout headers hdr,
         get_transition_type();
         switch (meta.type) {
             transition_type.out2in : {
-                send_to_NFV();
-                /*
                 port_t eport = meta.is_tcp? hdr.L4_header.tcp.dst_port : hdr.L4_header.udp.dst_port;
                 port_t src_port = meta.is_tcp? hdr.L4_header.tcp.src_port : hdr.L4_header.udp.src_port;
                 ip4_addr_t src_addr = hdr.ipv4.src_addr;
@@ -488,7 +486,6 @@ control MyIngress(inout headers hdr,
 
                 reverse_translate();
                 ip2port_dmac.apply();
-                */
             }
             transition_type.in2out : {
                 get_id();
@@ -496,7 +493,7 @@ control MyIngress(inout headers hdr,
                 get_time();
 
                 read_entry();
-                /*
+
                 if(meta.entry.map.eport == 0 || (meta.primary_timeout && meta.secondary_timeout)) {
                     meta.entry.map.id = meta.id;
                     meta.entry.primary_time = meta.time;
@@ -517,14 +514,14 @@ control MyIngress(inout headers hdr,
                     translate();
                     ip2port_dmac.apply();
                 }
-                else {*/
+                else {
                     meta.entry.secondary_time = meta.time;
 
                     map_write(meta.index, meta.entry);
                     
                     set_update();
                     send_to_NFV();
-                //} 
+                } 
             }
             transition_type.nfv_in2out : {
                 // send back ACK if necessary

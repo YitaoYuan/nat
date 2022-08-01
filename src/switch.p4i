@@ -898,8 +898,8 @@ const ip4_addr_t LAN_ADDR_END = 0xC0A80C00;// not included
 const ip4_addr_t NAT_ADDR = 0x0A010101;// 10.1.1.1
 
 const port_t PORT_MIN = 10000;
-const bit<32> PORT_MAX = 10010;//65536;// not included
-const port_t SWITCH_PORT_NUM = 2;//50000;
+const bit<32> PORT_MAX = 10020;//65536;// not included
+const port_t SWITCH_PORT_NUM = 10;//50000;
 const port_t NFV_PORT_NUM = (port_t)(PORT_MAX - (bit<32>)PORT_MIN) - SWITCH_PORT_NUM;
 
 const time_t AGING_TIME_US = 1000000;// 1 s
@@ -1337,81 +1337,41 @@ control MyIngress(inout headers hdr,
         get_transition_type();
         switch (meta.type) {
             transition_type.out2in : {
-                send_to_NFV();
-                /*
-
                 port_t eport = meta.is_tcp? hdr.L4_header.tcp.dst_port : hdr.L4_header.udp.dst_port;
-
                 port_t src_port = meta.is_tcp? hdr.L4_header.tcp.src_port : hdr.L4_header.udp.src_port;
-
                 ip4_addr_t src_addr = hdr.ipv4.src_addr;
-
                 bit<8> protocol = hdr.ipv4.protocol;
 
-                
-
                 if(eport <= PORT_MIN || (bit<32>)eport >= PORT_MAX) {
-
                     drop();
-
                     return;
-
                 }
-
-
 
                 reverse_map.read(meta.index, (bit<32>)(eport - PORT_MIN));
 
-
-
                 if(meta.index == 0) { // not in switch
-
                     send_to_NFV();
-
                     return;
-
                 }
-
-
 
                 assert(meta.index < SWITCH_PORT_NUM); //
 
-
-
                 map_read(meta.entry, meta.index);
-
-
 
                 assert(meta.entry.map.eport == eport); // 
 
-
-
                 ipv4_flow_id_t map_id = meta.entry.map.id;
-
                 get_time();
-
                 if({map_id.dst_addr, map_id.dst_port, map_id.protocol} != {src_addr, src_port, protocol}
-
                     || meta.time - meta.entry.primary_time > AGING_TIME_US) {// mismatch or aging
-
                     drop();
-
                     return;
-
                 }
-
                 meta.entry.primary_time = meta.time;
-
                 map_write(meta.index, meta.entry);
 
-
-
                 reverse_translate();
-
                 ip2port_dmac.apply();
-
-                */
-# 492 "switch.p4"
             }
             transition_type.in2out : {
                 get_id();
@@ -1419,57 +1379,35 @@ control MyIngress(inout headers hdr,
                 get_time();
 
                 read_entry();
-                /*
 
                 if(meta.entry.map.eport == 0 || (meta.primary_timeout && meta.secondary_timeout)) {
-
                     meta.entry.map.id = meta.id;
-
                     meta.entry.primary_time = meta.time;
-
-
 
                     if(meta.entry.map.eport == 0) { // initialize
-
                         meta.entry.map.eport = meta.index + PORT_MIN;
-
                         reverse_map.write((bit<32>)(meta.entry.map.eport - PORT_MIN), meta.index);
-
                     }
 
-
-
                     map_write(meta.index, meta.entry);// need to be atomic from read to write !!!
-
                     translate();
-
                     ip2port_dmac.apply();
-
                 }
-
                 else if(!meta.primary_timeout && meta.match) {
-
                     meta.entry.primary_time = meta.time;
 
-
-
                     map_write(meta.index, meta.entry);
-
                     translate();
-
                     ip2port_dmac.apply();
-
                 }
-
-                else {*/
-# 521 "switch.p4"
+                else {
                     meta.entry.secondary_time = meta.time;
 
                     map_write(meta.index, meta.entry);
 
                     set_update();
                     send_to_NFV();
-                //} 
+                }
             }
             transition_type.nfv_in2out : {
                 // send back ACK if necessary
@@ -1495,7 +1433,7 @@ control MyIngress(inout headers hdr,
 ****************  E G R E S S   P R O C E S S I N G   *******************
 
 *************************************************************************/
-# 552 "switch.p4"
+# 549 "switch.p4"
 control MyEgress(inout headers hdr,
                  inout metadata meta,
                  inout standard_metadata_t standard_metadata) {
@@ -1529,7 +1467,7 @@ control MyEgress(inout headers hdr,
 *************   C H E C K S U M    C O M P U T A T I O N   **************
 
 *************************************************************************/
-# 584 "switch.p4"
+# 581 "switch.p4"
 control MyComputeChecksum(inout headers hdr, inout metadata meta) {
     apply {
 
@@ -1598,7 +1536,7 @@ control MyComputeChecksum(inout headers hdr, inout metadata meta) {
 ***********************  D E P A R S E R  *******************************
 
 *************************************************************************/
-# 651 "switch.p4"
+# 648 "switch.p4"
 control MyDeparser(packet_out packet, in headers hdr) {
     apply {
         packet.emit(hdr.ethernet);
@@ -1613,7 +1551,7 @@ control MyDeparser(packet_out packet, in headers hdr) {
 ***********************  S W I T C H  *******************************
 
 *************************************************************************/
-# 664 "switch.p4"
+# 661 "switch.p4"
 V1Switch(
 MyParser(),
 MyVerifyChecksum(),
