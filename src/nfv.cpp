@@ -105,9 +105,17 @@ struct backward_hdr_t{
     L4_header_t L4_header;
 };
 
-struct map_val_t{
-    port_t eport_host;
-    mytime_t timestamp_host;// host order
+enum list_type: u8{
+    free,
+    inuse,
+    sw
+};
+
+struct list_entry_t{
+    flow_id_t id;
+    mytime_t timestamp_host;// only this is in host order
+    list_type type;
+    list_entry_t *l, *r;
 };
 
 struct Hash{
@@ -118,7 +126,7 @@ struct Hash{
 };
 
 /*
- * All these consts are in host's byte order
+ * All these constants are in host's byte order
  */
 
 const ip_addr_t LAN_ADDR_START = SHARED_LAN_ADDR_START;
@@ -144,20 +152,92 @@ pcap_t *device;
 
 u8 buf[max_frame_size] __attribute__ ((aligned (64)));
 
-unordered_map<flow_id_t, map_val_t, Hash>map;
-flow_id_t reverse_map[PORT_MAX - PORT_MIN];
-queue<port_t>free_port;
-
+/*
+ * all bytes in these data structure are in network order
+ */
+unordered_map<flow_id_t, list_entry_t*, Hash>map;
+list_entry_t reverse_map[PORT_MAX - PORT_MIN];
+list_entry_t free_port_leader_data, inuse_port_leader_data, sw_port_leader_data;
+list_entry_t *free_port_leader, *inuse_port_leader, *sw_port_leader;
+//如果要追求通用性的话，reverse_map就应该用list而不是数组，map直接映射到iterator
+//此时应该再开一个map映射eport到iterator
 
 void stop(int signo)
 {
     _exit(0);
 }
 
+void list_erase(list_entry_t *entry)
+{
+    entry->l->r = entry->r;
+    entry->r->l = entry->l;
+}
+
+void list_insert_before(list_entry_t *r, list_entry_t *entry)
+{
+    list_entry_t *l = r->l;
+    l->r = entry;
+    r->l = entry;
+    entry->l = l;
+    entry->r = r;
+}
+
+void list_move_to(list_entry_t *r, list_entry_t *entry)
+{
+    list_erase(entry);
+    list_insert_before(r, entry);
+}
+
+void list_move_to_back(list_entry_t *leader, list_entry_t *entry)
+{
+    list_move_to(leader, entry);
+}
+
+void list_move_to_front(list_entry_t *leader, list_entry_t *entry)
+{
+    list_move_to(leader->r, entry);
+}
+
+list_entry_t *list_front(list_entry_t *leader)
+{
+    return leader->r;
+}
+
+port_t entry_to_port_host(list_entry_t *entry)
+{
+    return (port_t)(entry - reverse_map) + PORT_MIN;
+}
+
+list_entry_t *port_host_to_entry(port_t port)
+{
+    return &reverse_map[port - PORT_MIN];
+}
+
+bool list_empty(list_entry_t *leader)
+{
+    return leader->l == leader;
+}
+
 void nfv_init()
 {
-    for(port_t p = PORT_MIN + SWITCH_PORT_NUM; p < PORT_MAX; p++)
-        free_port.push(p);
+    free_port_leader = &free_port_leader_data;
+    inuse_port_leader = &inuse_port_leader_data;
+    sw_port_leader = &sw_port_leader_data;
+    free_port_leader->l = free_port_leader->r = free_port_leader;
+    inuse_port_leader->l = inuse_port_leader->r = inuse_port_leader;
+    sw_port_leader->l = sw_port_leader->r = sw_port_leader;
+    
+    for(port_t port = PORT_MIN; port < PORT_MIN + SWITCH_PORT_NUM; port++) {
+        list_entry_t *entry = port_host_to_entry(port);
+        entry->type = list_type::sw;
+        list_insert_before(sw_port_leader, entry);
+    }
+        
+    for(port_t port = PORT_MIN + SWITCH_PORT_NUM; port < PORT_MAX; port++) {
+        list_entry_t *entry = port_host_to_entry(port);
+        entry->type = list_type::free;
+        list_insert_before(free_port_leader, entry);
+    }
 }
 
 checksum_t verify_checksum(forward_hdr_t * const hdr) {
@@ -232,18 +312,23 @@ void forward_process(mytime_t timestamp, len_t packet_len, forward_hdr_t * const
     // things in map are in network byte order
     auto it = map.find(update.secondary_map.id);
     if(it == map.end()) {// a new flow
-        if(free_port.empty()) return;// no port available, drop
-        port_t eport_host = free_port.front();// host
-        free_port.pop();
+        if(list_empty(free_port_leader)) return;// no port available, drop
+        list_entry_t *entry = list_front(free_port_leader);
+        list_move_to_back(inuse_port_leader, entry);
+        entry->type = list_type::inuse;
 
-        it = map.insert(make_pair(update.secondary_map.id,
-                (map_val_t){eport_host/*h*/, timestamp/*h*/})).first;
+        it = map.insert(make_pair(update.secondary_map.id, entry)).first;
 
-        reverse_map[eport_host - PORT_MIN] = update.secondary_map.id;
+        entry->id = update.secondary_map.id;
     }
-
 // refresh flow's timestamp
-    it->second.timestamp_host = timestamp;// host
+    list_entry_t *entry = it->second;
+    port_t eport_h = entry_to_port_host(entry);
+    port_t eport_n = htons(eport_h);
+    entry->timestamp_host = timestamp;// host
+
+    assert(entry->type == list_type::inuse);
+    list_move_to_back(inuse_port_leader, entry);
 
 // translate
     checksum_t delta = 0;// host
@@ -254,13 +339,13 @@ void forward_process(mytime_t timestamp, len_t packet_len, forward_hdr_t * const
     // and the packet will be droped by switch later.
     hdr->ip.checksum = htons(make_zero_negative(sub(ntohs(hdr->ip.checksum), delta)));
     if(is_tcp) {
-        delta = add(delta, sub(it->second.eport_host, ntohs(hdr->L4_header.tcp.src_port)));
-        hdr->L4_header.tcp.src_port = htons(it->second.eport_host);// h2n
+        delta = add(delta, sub(eport_h, ntohs(hdr->L4_header.tcp.src_port)));
+        hdr->L4_header.tcp.src_port = eport_n;// 
         hdr->L4_header.tcp.checksum = htons(make_zero_negative(sub(ntohs(hdr->L4_header.tcp.checksum), delta)));
     }
     else {
-        delta = add(delta, sub(it->second.eport_host, ntohs(hdr->L4_header.udp.src_port)));
-        hdr->L4_header.udp.src_port = htons(it->second.eport_host);
+        delta = add(delta, sub(eport_h, ntohs(hdr->L4_header.udp.src_port)));
+        hdr->L4_header.udp.src_port = eport_n;
         if(hdr->L4_header.udp.checksum != 0)// 0 is same for n & h
             hdr->L4_header.udp.checksum = htons(make_zero_negative(sub(ntohs(hdr->L4_header.udp.checksum), delta)));
     }
@@ -279,36 +364,40 @@ void backward_process(mytime_t timestamp, len_t packet_len, backward_hdr_t * con
 
     bool is_tcp;
     ip_addr_t src_addr = hdr->ip.src_addr;
-    port_t eport, src_port;
+    port_t eport_n, src_port;
     if(hdr->ip.protocol == TCP_PROTOCOL) {// 8 bit, OK
         if(packet_len < sizeof(ethernet_t) + sizeof(ip_t) + sizeof(tcp_t))
             return;
         is_tcp = 1;
-        eport = hdr->L4_header.tcp.dst_port;
+        eport_n = hdr->L4_header.tcp.dst_port;
         src_port = hdr->L4_header.tcp.src_port;
     }
     else if(hdr->ip.protocol == UDP_PROTOCOL) {
         if(packet_len < sizeof(ethernet_t) + sizeof(ip_t) + sizeof(udp_t))
             return;
         is_tcp = 0;
-        eport = hdr->L4_header.udp.dst_port;
+        eport_n = hdr->L4_header.udp.dst_port;
         src_port = hdr->L4_header.udp.src_port;
     }
     else return;
+    port_t eport_h = ntohs(eport_n);
 
-    if(ntohs(eport) <= PORT_MIN || ntohs(eport) >= PORT_MAX) return;
+    if(eport_h <= PORT_MIN || eport_h >= PORT_MAX) return;
+
+    list_entry_t *entry = port_host_to_entry(eport_h);
+    if(entry->type != list_type::inuse) return;
 
 // match
-    flow_id_t &flow_id = reverse_map[ntohs(eport) - PORT_MIN];// index is in h form
+    flow_id_t &flow_id = entry->id;
     if(flow_id.dst_addr != src_addr || flow_id.dst_port != src_port 
         || flow_id.protocol != hdr->ip.protocol)
         return; // drop on mismatch
     auto it = map.find(flow_id);
-    if(it == map.end() || htons(it->second.eport_host) != eport || timestamp - it->second.timestamp_host > AGING_TIME_US)
-        return; // drop on mismatch or aging
-
+    assert(it != map.end() && it->second == entry);// because it is in use
+    
 // refresh flow's timestamp
-    it->second.timestamp_host = timestamp;
+    entry->timestamp_host = timestamp;
+    list_move_to_back(inuse_port_leader, entry);
 
 // tranlate
     checksum_t delta = 0;// host
@@ -337,8 +426,26 @@ void ack_process(mytime_t timestamp, len_t packet_len, forward_hdr_t * hdr)
 
 }
 
+void do_aging(mytime_t timestamp)
+{
+    while(!list_empty(inuse_port_leader)) {
+        list_entry_t *entry = list_front(inuse_port_leader);
+        if(timestamp - entry->timestamp_host <= AGING_TIME_US) break;
+
+        list_move_to_back(free_port_leader, entry);
+        entry->type = list_type::free;
+        auto erase_res = map.erase(entry->id);
+        assert(erase_res == 1); 
+    }
+    list_entry_t *entry = list_front(inuse_port_leader);
+    int cnt = 0;
+    while(entry != inuse_port_leader) cnt++, entry = entry->r;
+    printf("%d active flows\n", cnt);
+}
+
 void nat_process(mytime_t timestamp, len_t packet_len, forward_hdr_t * hdr)
 {
+    do_aging(timestamp);
     if(hdr->ethernet.ether_type == htons(TYPE_UPDATE)) {
         if(packet_len < sizeof(ethernet_t) + sizeof(update_t)) return;
 
@@ -353,7 +460,7 @@ void nat_process(mytime_t timestamp, len_t packet_len, forward_hdr_t * hdr)
 
 void pcap_handle(u_char *user, const struct pcap_pkthdr *h, const u_char *bytes)
 {
-    fprintf(stderr, "a packet\n");
+    //fprintf(stderr, "a packet\n");
     //h->ts.tv_sec/tv_usec
     //h->caplen
     //h->len

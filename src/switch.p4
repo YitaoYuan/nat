@@ -493,7 +493,7 @@ control MyIngress(inout headers hdr,
                 get_time();
 
                 read_entry();
-
+                
                 if(meta.entry.map.eport == 0 || (meta.primary_timeout && meta.secondary_timeout)) {
                     meta.entry.map.id = meta.id;
                     meta.entry.primary_time = meta.time;

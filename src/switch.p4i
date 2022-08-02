@@ -902,7 +902,7 @@ const bit<32> PORT_MAX = 10020;//65536;// not included
 const port_t SWITCH_PORT_NUM = 10;//50000;
 const port_t NFV_PORT_NUM = (port_t)(PORT_MAX - (bit<32>)PORT_MIN) - SWITCH_PORT_NUM;
 
-const time_t AGING_TIME_US = 1000000;// 1 s
+const time_t AGING_TIME_US = 3000000;// 1 s
 
 /*************************************************************************
 
