@@ -17,7 +17,7 @@ const bit<8>  UDP_PROTOCOL = 0x11;
 const bit<8>  ICMP_PROTOCOL = 0x01;
 
 const bit<16> TYPE_IPV4 = 0x800;
-const bit<16> TYPE_UPDATE = 0x88B5;
+const bit<16> TYPE_UPDATE = SHARED_TYPE_UPDATE;
 
 //you can change these by tables to support dynamic & multiple LAN address allocation
 const ip4_addr_t LAN_ADDR_START = SHARED_LAN_ADDR_START;// 192.168.11.0
@@ -98,8 +98,8 @@ enum transition_type {
     ignore,
     in2out,
     out2in,
-    nfv_in2out,
-    nfv_out2in
+    nfv_translation,
+    nfv_update
 }
 
 struct metadata {
@@ -135,8 +135,8 @@ enum bit<16> message_t {
     null = 0,
     timeout = 1,
     require_update = 2,
-    accept_update = 3,
-    reject_update = 4
+    accept_update = 3
+    //reject_update = 4//看上去reject是不需要的？？？如果checksum failed直接drop不就好了？
 }
 
 header update_t {//36
@@ -150,6 +150,9 @@ header update_t {//36
     3: sw->NFV, accept update, no payload
     4: sw->NFV, reject upadte, no payload
     */
+    index_t index; // index is the hash value of flow id
+    time_t sw_time;
+    time_t nfv_time;// 因为一个ACK返回的时候wait_entry可能已经没了，所以时间需要记录在packet里
     bit<16> checksum;
 }
 
@@ -241,7 +244,12 @@ control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
             hdr.update.secondary_map.id.zero,
             hdr.update.secondary_map.eport,
 
-            hdr.update.type},
+            hdr.update.type,
+            hdr.update.index,
+            
+            hdr.update.sw_time,
+            hdr.update.nfv_time
+            },
             hdr.update.checksum, HashAlgorithm.csum16);
 
         verify_checksum(meta.verify_ip, 
@@ -363,9 +371,9 @@ control MyIngress(inout headers hdr,
     action get_transition_type() {
         if(standard_metadata.ingress_port == NFV_PORT) {
             if(hdr.update.isValid())
-                meta.type = transition_type.nfv_in2out;
+                meta.type = transition_type.nfv_update;
             else 
-                meta.type = transition_type.nfv_out2in;
+                meta.type = transition_type.nfv_translation;
         }
         else if(LAN_ADDR_START <= hdr.ipv4.src_addr && hdr.ipv4.src_addr < LAN_ADDR_END
             && !(LAN_ADDR_START <= hdr.ipv4.dst_addr && hdr.ipv4.dst_addr < LAN_ADDR_END))
@@ -431,7 +439,7 @@ control MyIngress(inout headers hdr,
     action set_update() {
         hdr.ethernet.ether_type = TYPE_UPDATE;
         hdr.update.setValid();
-        hdr.update = {meta.entry.map, {meta.id, 0}, meta.primary_timeout? message_t.timeout: message_t.null, 0};
+        hdr.update = {meta.entry.map, {meta.id, 0}, meta.primary_timeout? message_t.timeout: message_t.null, meta.index, meta.time, 0, 0};
     }
 
     action send_to_NFV() {
@@ -475,7 +483,9 @@ control MyIngress(inout headers hdr,
                 assert(meta.entry.map.eport == eport); // 
 
                 ipv4_flow_id_t map_id = meta.entry.map.id;
+
                 get_time();
+
                 if({map_id.dst_addr, map_id.dst_port, map_id.protocol} != {src_addr, src_port, protocol}
                     || meta.time - meta.entry.primary_time > AGING_TIME_US) {// mismatch or aging
                     drop();
@@ -523,17 +533,22 @@ control MyIngress(inout headers hdr,
                     send_to_NFV();
                 } 
             }
-            transition_type.nfv_in2out : {
-                // send back ACK if necessary
-
-
-
-                hdr.update.setInvalid();
-                hdr.ethernet.ether_type = TYPE_IPV4;
+            transition_type.nfv_translation : {
                 ip2port_dmac.apply();
             }
-            transition_type.nfv_out2in : {
-                ip2port_dmac.apply();
+            transition_type.nfv_update : {
+                get_time();
+                meta.index = hdr.update.index;
+
+                if(hdr.update.type != message_t.require_update) return;
+                if(meta.time - hdr.update.sw_time > AGING_TIME_US / 2) return;
+                map_read(meta.entry, meta.index);
+
+                if(meta.entry.map != hdr.update.primary_map) return;
+
+                meta.entry.map = hdr.update.secondary_map;
+                meta.entry.primary_time = meta.time;
+                map_write(meta.index, meta.entry);
             }
             default : {
                 drop();
@@ -598,7 +613,12 @@ control MyComputeChecksum(inout headers hdr, inout metadata meta) {
             hdr.update.secondary_map.id.zero,
             hdr.update.secondary_map.eport,
 
-            hdr.update.type},
+            hdr.update.type,
+            hdr.update.index,
+
+            hdr.update.sw_time,
+            hdr.update.nfv_time
+            },
             hdr.update.checksum, HashAlgorithm.csum16);
 
         update_checksum(meta.update_ip, 
