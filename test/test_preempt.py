@@ -6,7 +6,7 @@ import time
 client1=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
 client2=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
 
-AGING_TIME_S = 3
+AGING_TIME_S = 10
 msg="123"
 #0
 client1.sendto("1-1".encode('utf-8'),('192.168.22.3', 12345))

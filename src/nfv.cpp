@@ -13,6 +13,7 @@
 using std::unordered_map;
 using std::queue;
 using std::make_pair;
+using std::swap;
 
 typedef unsigned short port_t;
 typedef unsigned int ip_addr_t;
@@ -50,19 +51,14 @@ struct map_entry_t{
     port_t eport;
 }__attribute__ ((__packed__));
 
-enum message_t: u16{
-    // these consts are in nwtwork byte order
-    null = 0x0000,
-    timeout = 0x0100,
-    require_update = 0x0200,
-    accept_update = 0x0300
-    //reject_update = 0x0400//看上去reject是不需要的？？？如果checksum failed直接drop不就好了？
-};
-
-struct update_t{
+struct nat_metadata_t{
     map_entry_t primary_map; 
     map_entry_t secondary_map;
-    message_t type;
+    u16 zero1     : 5;
+    u16 is_update : 1;
+    u16 is_to_out : 1;
+    u16 is_to_in  : 1;
+    u16 zero2     : 8;
     port_t index;
     mytime_t sw_time_net;
     mytime_t nfv_time_net;
@@ -97,15 +93,9 @@ union L4_header_t{
     udp_t udp;
 };
 
-struct forward_hdr_t{
+struct hdr_t{
     ethernet_t ethernet;
-    update_t update;
-    ip_t ip;
-    L4_header_t L4_header;
-};
-
-struct backward_hdr_t{
-    ethernet_t ethernet;
+    nat_metadata_t metadata;
     ip_t ip;
     L4_header_t L4_header;
 };
@@ -118,6 +108,7 @@ enum list_type: u8{
 
 struct list_entry_t{
     flow_id_t id;
+    port_t index;
     mytime_t timestamp_host;// this is in host order
     list_type type;
     bool is_waiting;
@@ -140,6 +131,7 @@ struct wait_entry_t{
 };
 
 
+
 /*
  * All these constants are in host's byte order
  */
@@ -157,13 +149,15 @@ const u32 AGING_TIME_US = SHARED_AGING_TIME_US;
 const u32 WAIT_TIME_US = 10000;// 10 ms
 
 const u16 TYPE_IPV4 = 0x800;
-const u16 TYPE_UPDATE = SHARED_TYPE_UPDATE;
+const u16 TYPE_METADATA = SHARED_TYPE_METADATA;
 
 const u8 TCP_PROTOCOL = 0x06;
 const u8 UDP_PROTOCOL = 0x11;
 
 const u32 max_frame_size = 1514;
 
+const u32 HEAVY_HITTER_SIZE = 8;
+const u32 HEAVY_HITTER_REBOOT_THRESHOLD = 128;
 /*
  * predefined MAC address is in network byte order
  */
@@ -176,7 +170,7 @@ const u8 NFV_INNER_MAC[6] = {0, 0, 0, 0, 0, SHARED_NFV_INNER_MAC};
 pcap_t *device;
 
 u8 buf[max_frame_size] __attribute__ ((aligned (64)));
-u8 update_buf[sizeof(ethernet_t) + sizeof(update_t)] __attribute__ ((aligned (64)));
+u8 metadata_buf[sizeof(ethernet_t) + sizeof(nat_metadata_t)] __attribute__ ((aligned (64)));
 /*
  * all bytes in these data structure are in network order
  */
@@ -190,6 +184,40 @@ list_entry_t *avail_port_leader, *inuse_port_leader, *sw_port_leader;
 wait_entry_t wait_set[SWITCH_PORT_NUM];
 wait_entry_t wait_set_leader_data;
 wait_entry_t *wait_set_leader;
+
+template<typename COUNTER_T, typename ID_T>
+struct heavy_hitter_entry_t{
+    COUNTER_T cnt;
+    ID_T id;
+};
+
+template<typename COUNTER_T, typename ID_T>
+struct heavy_hitter_t{
+    heavy_hitter_entry_t<COUNTER_T, ID_T> entry[HEAVY_HITTER_SIZE];
+    // entry[0].cnt is max, entry[HEAVY_HITTER_SIZE-1].cnt is min
+    int size, total_cnt;
+    void init() {
+        size = 0;
+        total_cnt = 0;
+        memset(entry, 0, sizeof(entry));
+    }
+    void count(ID_T id) {
+        if(total_cnt == HEAVY_HITTER_REBOOT_THRESHOLD) init();
+        int i;
+        for(i = 0; i < size; i++) if(entry[i].id == id) break;
+        if(i >= size) {
+            if(i == HEAVY_HITTER_SIZE) i--;
+            else size++;
+            entry[i].id = id;
+        }
+        entry[i].cnt++;
+        total_cnt++;
+        // re-sort
+        for(i = i-1; i >= 0; i--) if(entry[i].cnt < entry[i+1].cnt) swap(entry[i], entry[i+1]);
+    }
+};
+
+heavy_hitter_t<u16, port_t> heavy_hitter[SWITCH_PORT_NUM];
 
 void stop(int signo)
 {
@@ -279,6 +307,9 @@ void nfv_init()
 
     wait_set_leader = &wait_set_leader_data;
     wait_set_leader->l = wait_set_leader->r = wait_set_leader;
+
+    for(int i = 0; i < SWITCH_PORT_NUM; i++)
+        heavy_hitter[i].init();
 }
 
 inline checksum_t negative(checksum_t x) {
@@ -304,14 +335,14 @@ inline checksum_t make_zero_negative(checksum_t x) {
     return x == 0 ? ~x : x;
 }
 
-checksum_t compute_checksum(update_t &hdr_update) {
+checksum_t compute_checksum(nat_metadata_t &hdr_metadata) {
     /*
-    It is acceptable to only verify checksum of header "update"
+    It is acceptable to only verify checksum of header "metadata"
     because we have aging mechanism.
     Wrong flow state will be removed by that.
     */
-    checksum_t *l = (checksum_t *)&hdr_update;
-    checksum_t *r = (checksum_t *)((u8*)&hdr_update + sizeof(update_t));
+    checksum_t *l = (checksum_t *)&hdr_metadata;
+    checksum_t *r = (checksum_t *)((u8*)&hdr_metadata + sizeof(nat_metadata_t));
     u32 res = 0;
     for(checksum_t *i = l; i < r; i++) 
         res += ntohs(*i);
@@ -320,74 +351,104 @@ checksum_t compute_checksum(update_t &hdr_update) {
     return ~(checksum_t)res;
 }
 
-void send_update(port_t index)
+void heavy_hitter_count(port_t bucket_index, port_t eport)
 {
-    forward_hdr_t *hdr = (forward_hdr_t *)update_buf;
-    // MAC address is useless between nfv & switch
-    memcpy(hdr->ethernet.dst_addr, SWITCH_INNER_MAC, sizeof(hdr->ethernet.dst_addr));
-    memcpy(hdr->ethernet.src_addr, NFV_INNER_MAC, sizeof(hdr->ethernet.src_addr));
-    hdr->ethernet.ether_type = htons(TYPE_UPDATE);
-
-    hdr->update.primary_map = wait_set[index].primary_map;
-    hdr->update.secondary_map = wait_set[index].secondary_map;
-
-    hdr->update.type = message_t::require_update;
-    hdr->update.index = htons(index);
-
-    hdr->update.sw_time_net = wait_set[index].sw_time_net;
-    hdr->update.nfv_time_net = htonl(wait_set[index].first_req_time_host);// not necessary to convert
-
-    hdr->update.checksum = 0;// clear to recalculate
-    hdr->update.checksum = make_zero_negative(htons(compute_checksum(hdr->update)));
-
-    pcap_sendpacket(device, (u_char *)hdr, sizeof(hdr->ethernet) + sizeof(hdr->update));
+    heavy_hitter[bucket_index].count(eport);
 }
 
-void forward_process(mytime_t timestamp, len_t packet_len, forward_hdr_t * const hdr)
+port_t heavy_hitter_get(port_t bucket_index)
+{
+    auto &hh = heavy_hitter[bucket_index];
+    for(int i = 0; i < hh.size; i++) {
+        list_entry_t *entry = port_host_to_entry(hh.entry[i].id);
+        if(entry->type == list_type::inuse && entry->index == bucket_index)
+            return hh.entry[i].id;
+        // if this has timeout, it will be locked and will not be moved to list "avail"
+    }
+    assert(false);
+}
+
+void send_back(hdr_t * hdr, size_t len)
+{
+    //fprintf(stderr, "send_back\n");
+    memcpy(hdr->ethernet.dst_addr, SWITCH_INNER_MAC, sizeof(hdr->ethernet.dst_addr));
+    memcpy(hdr->ethernet.src_addr, NFV_INNER_MAC, sizeof(hdr->ethernet.src_addr));
+    pcap_sendpacket(device, (u_char *)hdr, len);
+}
+
+void send_update(port_t index)
+{
+    hdr_t *hdr = (hdr_t *)metadata_buf;
+    // MAC address is useless between nfv & switch
+
+    hdr->metadata.primary_map = wait_set[index].primary_map;
+    hdr->metadata.secondary_map = wait_set[index].secondary_map;
+
+    hdr->metadata.zero1 = 0;
+    hdr->metadata.is_update = 1;
+    hdr->metadata.is_to_out = 0;
+    hdr->metadata.is_to_in = 0;
+    hdr->metadata.zero2 = 0;
+
+    hdr->metadata.index = htons(index);
+
+    hdr->metadata.sw_time_net = wait_set[index].sw_time_net;
+    hdr->metadata.nfv_time_net = htonl(wait_set[index].first_req_time_host);// not necessary to convert
+
+    hdr->metadata.checksum = 0;// clear to recalculate
+    hdr->metadata.checksum = make_zero_negative(htons(compute_checksum(hdr->metadata)));
+
+    hdr->ethernet.ether_type = htons(TYPE_METADATA);
+    send_back(hdr, sizeof(hdr->ethernet) + sizeof(hdr->metadata));
+}
+
+
+
+void forward_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
 {
 // verify
-    if(packet_len < sizeof(ethernet_t) + sizeof(update_t) + sizeof(ip_t)) return;
-    // verify update
-    if(hdr->update.type != message_t::null && hdr->update.type != message_t::timeout) return;
     // verify ip
-    if(hdr->ip.src_addr != hdr->update.secondary_map.id.src_addr 
-        || hdr->ip.dst_addr != hdr->update.secondary_map.id.dst_addr 
-        || hdr->ip.protocol != hdr->update.secondary_map.id.protocol)
+    if(packet_len < sizeof(ethernet_t) + sizeof(nat_metadata_t) + sizeof(ip_t)) return;
+    
+    if(hdr->ip.src_addr != hdr->metadata.secondary_map.id.src_addr 
+        || hdr->ip.dst_addr != hdr->metadata.secondary_map.id.dst_addr 
+        || hdr->ip.protocol != hdr->metadata.secondary_map.id.protocol)
         return;
     // verify tcp/udp
     bool is_tcp;
     if(hdr->ip.protocol == TCP_PROTOCOL) {// 8 bit, OK
-        if(packet_len < sizeof(ethernet_t) + sizeof(update_t) + sizeof(ip_t) + sizeof(tcp_t))
+        if(packet_len < sizeof(ethernet_t) + sizeof(nat_metadata_t) + sizeof(ip_t) + sizeof(tcp_t))
             return;
-        if(hdr->L4_header.tcp.src_port != hdr->update.secondary_map.id.src_port
-            || hdr->L4_header.tcp.dst_port != hdr->update.secondary_map.id.dst_port)
+        if(hdr->L4_header.tcp.src_port != hdr->metadata.secondary_map.id.src_port
+            || hdr->L4_header.tcp.dst_port != hdr->metadata.secondary_map.id.dst_port)
             return;
         is_tcp = 1;
     }
     else if(hdr->ip.protocol == UDP_PROTOCOL) {
-        if(packet_len < sizeof(ethernet_t) + sizeof(update_t) + sizeof(ip_t) + sizeof(udp_t))
+        if(packet_len < sizeof(ethernet_t) + sizeof(nat_metadata_t) + sizeof(ip_t) + sizeof(udp_t))
             return;
-        if(hdr->L4_header.udp.src_port != hdr->update.secondary_map.id.src_port
-            || hdr->L4_header.udp.dst_port != hdr->update.secondary_map.id.dst_port)
+        if(hdr->L4_header.udp.src_port != hdr->metadata.secondary_map.id.src_port
+            || hdr->L4_header.udp.dst_port != hdr->metadata.secondary_map.id.dst_port)
             return;
         is_tcp = 0;
     }
     else return;
 
 // allocate flow state for new flow
-    update_t &update = hdr->update;
+    nat_metadata_t &metadata = hdr->metadata;
     // things in map are in network byte order
-    auto it = map.find(update.secondary_map.id);
+    auto it = map.find(metadata.secondary_map.id);
     if(it == map.end()) {// a new flow
         if(list_empty(avail_port_leader)) return;// no port available, drop
         list_entry_t *entry = list_front(avail_port_leader);
         
-        entry->id = update.secondary_map.id;
+        entry->id = metadata.secondary_map.id;
+        entry->index = ntohs(metadata.index);
         entry->type = list_type::inuse;
         entry->is_waiting = 0;
         list_move_to_back(inuse_port_leader, entry);
 
-        it = map.insert(make_pair(update.secondary_map.id, entry)).first;
+        it = map.insert(make_pair(metadata.secondary_map.id, entry)).first;
     }
 // refresh flow's timestamp
     list_entry_t *entry = it->second;
@@ -397,6 +458,10 @@ void forward_process(mytime_t timestamp, len_t packet_len, forward_hdr_t * const
 
     assert(entry->type == list_type::inuse);
     list_move_to_back(inuse_port_leader, entry);
+
+// heavy hitter detect
+    port_t index = ntohs(metadata.index);
+    heavy_hitter_count(index, entry_to_port_host(entry));
 
 // translate
     checksum_t delta = 0;// host
@@ -418,52 +483,54 @@ void forward_process(mytime_t timestamp, len_t packet_len, forward_hdr_t * const
             hdr->L4_header.udp.checksum = htons(make_zero_negative(sub(ntohs(hdr->L4_header.udp.checksum), delta)));
     }
 
+// fill hdr
+    metadata.secondary_map.eport = eport_n;
+    delta = eport_h;
 // require to update switch's mapping
 
-    if(hdr->update.type == message_t::timeout) {
+    if(metadata.is_update) {//
+        if(!wait_set[index].is_waiting) {
+            port_t swap_port_h = heavy_hitter_get(index);
+            port_t swap_port_n = htons(swap_port_h);
+            list_entry_t *swap_entry = port_host_to_entry(swap_port_h);
+            flow_id_t &swap_id = swap_entry->id;
 
-        hdr->update.secondary_map.eport = eport_n;// switch has set eport to 0
+            wait_set[index] = {metadata.primary_map, {swap_id, swap_port_n}, 
+                                metadata.sw_time_net, timestamp, timestamp, NULL, NULL, true};
+            // map entry
+            swap_entry->is_waiting = 1;// locked, it will not be moved to list "avail" immediately
 
-        port_t index = ntohs(hdr->update.index);
-        if(wait_set[index].is_waiting) goto send;
-
-        wait_set[index] = {hdr->update.primary_map, hdr->update.secondary_map, 
-                            hdr->update.sw_time_net, timestamp, timestamp, NULL, NULL, true};
-        // map entry
-        entry->is_waiting = 1;
-
-        list_insert_before(wait_set_leader, &wait_set[index]);// == push_back
-        send_update(index);
+            list_insert_before(wait_set_leader, &wait_set[index]);// == push_back
+            send_update(index);
+        }
+        //clear this bit, 因为在返回的包中is_update和is_to_in/out最多只有一个为1
+        metadata.is_update = 0;
+        delta = sub(delta, 0x2000);
     }
+    metadata.checksum = htons(make_zero_negative(sub(ntohs(metadata.checksum), delta)));
 
 // send back
 send:
-    // delete header update
-    memcpy(hdr->ethernet.dst_addr, SWITCH_INNER_MAC, sizeof(hdr->ethernet.dst_addr));
-    memcpy(hdr->ethernet.src_addr, NFV_INNER_MAC, sizeof(hdr->ethernet.src_addr));
-    hdr->ethernet.ether_type = htons(TYPE_IPV4);
-    u8 *new_hdr = (u8*)hdr + sizeof(hdr->update);
-    memcpy(new_hdr, (u8*)hdr, sizeof(hdr->ethernet));
-    pcap_sendpacket(device, (u_char *)new_hdr, packet_len - sizeof(hdr->update));
+    send_back(hdr, packet_len);
 }
 
-void backward_process(mytime_t timestamp, len_t packet_len, backward_hdr_t * const hdr)
+void backward_process(mytime_t timestamp, len_t packet_len, hdr_t * const hdr)
 {
 // verify
-    if(packet_len < sizeof(ethernet_t) + sizeof(ip_t)) return;
+    if(packet_len < sizeof(ethernet_t) + sizeof(nat_metadata_t) + sizeof(ip_t)) return;
 
     bool is_tcp;
     ip_addr_t src_addr = hdr->ip.src_addr;
     port_t eport_n, src_port;
     if(hdr->ip.protocol == TCP_PROTOCOL) {// 8 bit, OK
-        if(packet_len < sizeof(ethernet_t) + sizeof(ip_t) + sizeof(tcp_t))
+        if(packet_len < sizeof(ethernet_t) + sizeof(nat_metadata_t) + sizeof(ip_t) + sizeof(tcp_t))
             return;
         is_tcp = 1;
         eport_n = hdr->L4_header.tcp.dst_port;
         src_port = hdr->L4_header.tcp.src_port;
     }
     else if(hdr->ip.protocol == UDP_PROTOCOL) {
-        if(packet_len < sizeof(ethernet_t) + sizeof(ip_t) + sizeof(udp_t))
+        if(packet_len < sizeof(ethernet_t) + sizeof(nat_metadata_t) + sizeof(ip_t) + sizeof(udp_t))
             return;
         is_tcp = 0;
         eport_n = hdr->L4_header.udp.dst_port;
@@ -489,6 +556,10 @@ void backward_process(mytime_t timestamp, len_t packet_len, backward_hdr_t * con
     entry->timestamp_host = timestamp;
     list_move_to_back(inuse_port_leader, entry);
 
+// heavy hitter detect
+    port_t index = ntohs(hdr->metadata.index);
+    heavy_hitter_count(index, entry_to_port_host(entry));
+
 // tranlate
     checksum_t delta = 0;// host
     delta = add(delta, sub(ntohs(flow_id.src_addr & 0xffff), ntohs(hdr->ip.dst_addr & 0xffff)));
@@ -508,31 +579,30 @@ void backward_process(mytime_t timestamp, len_t packet_len, backward_hdr_t * con
     }
 
 // send back
-    memcpy(hdr->ethernet.dst_addr, SWITCH_INNER_MAC, sizeof(hdr->ethernet.dst_addr));
-    memcpy(hdr->ethernet.src_addr, NFV_INNER_MAC, sizeof(hdr->ethernet.src_addr));
-    pcap_sendpacket(device, (u_char *)hdr, packet_len);
+    send_back(hdr, packet_len);
 }
 
-void ack_process(mytime_t timestamp, len_t packet_len, forward_hdr_t * hdr)
+void ack_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
 {
-    // only hdr.ethernet & hdr.update is valid
-    assert(hdr->update.type == message_t::accept_update/* || hdr->update.type == message_t::reject_update*/);
-
-    if(timestamp - ntohl(hdr->update.nfv_time_net) > AGING_TIME_US / 2) return;
-
-    port_t index = ntohs(hdr->update.index);
+    //fprintf(stderr, "receive ACK\n");
+    // only hdr.ethernet & hdr.metadata is valid
+    assert(hdr->metadata.is_update);
+    
+    if(timestamp - ntohl(hdr->metadata.nfv_time_net) > AGING_TIME_US / 2) return;
+    //fprintf(stderr, "1\n");
+    port_t index = ntohs(hdr->metadata.index);
     if(index >= SWITCH_PORT_NUM) return; // if checksum is right, this could not happen
-
+    //fprintf(stderr, "2\n");
     wait_entry_t *wait_entry = &wait_set[index];
     if(!wait_entry -> is_waiting) return; // Redundant ACK
-    
+    //fprintf(stderr, "3\n");
     // mismatch
-    if(memcmp(&wait_entry->primary_map, &hdr->update.primary_map, sizeof(map_entry_t)) != 0 ||
-        memcmp(&wait_entry->secondary_map, &hdr->update.secondary_map, sizeof(map_entry_t)) != 0) 
+    if(memcmp(&wait_entry->primary_map, &hdr->metadata.primary_map, sizeof(map_entry_t)) != 0 ||
+        memcmp(&wait_entry->secondary_map, &hdr->metadata.secondary_map, sizeof(map_entry_t)) != 0) 
         return;
-
-    list_entry_t *entry_sw = port_host_to_entry(ntohs(hdr->update.primary_map.eport));
-    list_entry_t *entry_nfv = port_host_to_entry(ntohs(hdr->update.secondary_map.eport));
+    //fprintf(stderr, "4\n");
+    list_entry_t *entry_sw = port_host_to_entry(ntohs(hdr->metadata.primary_map.eport));
+    list_entry_t *entry_nfv = port_host_to_entry(ntohs(hdr->metadata.secondary_map.eport));
 
     assert(entry_sw->type == list_type::sw && entry_nfv->type == list_type::inuse);
 
@@ -550,18 +620,21 @@ void ack_process(mytime_t timestamp, len_t packet_len, forward_hdr_t * hdr)
 
 void do_aging(mytime_t timestamp)
 {
-    // TODO list_front -> list_next
-    while(!list_empty(inuse_port_leader)) {
-        list_entry_t *entry = list_front(inuse_port_leader);
+    for(list_entry_t *entry = inuse_port_leader->r, *nxt; 
+        entry != inuse_port_leader; entry = nxt) {
+        
+        nxt = entry->r;// must first calculate address nxt, or SGfault may happen 
+
         if(timestamp - entry->timestamp_host <= AGING_TIME_US) break;
 
-        if(entry->is_waiting) break;// wait to swap to switch
+        if(entry->is_waiting) continue;// wait to swap to switch
 
         list_move_to_back(avail_port_leader, entry);
         entry->type = list_type::avail;
         auto erase_res = map.erase(entry->id);
         assert(erase_res == 1); 
     }
+    // for debug
     list_entry_t *entry = list_front(inuse_port_leader);
     int cnt = 0;
     while(entry != inuse_port_leader) cnt++, entry = entry->r;
@@ -589,25 +662,26 @@ void update_wait_set(mytime_t timestamp)
     }
 }
 
-void nat_process(mytime_t timestamp, len_t packet_len, forward_hdr_t * hdr)
+void nat_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
 {
     do_aging(timestamp);
-    if(hdr->ethernet.ether_type == htons(TYPE_UPDATE)) {
-        if(packet_len < sizeof(ethernet_t) + sizeof(update_t)) 
-            return;
-        if(memcmp(hdr->ethernet.src_addr, SWITCH_INNER_MAC, sizeof(hdr->ethernet.src_addr)) != 0 ||
-            memcmp(hdr->ethernet.dst_addr, NFV_INNER_MAC, sizeof(hdr->ethernet.dst_addr)) != 0)
-            return;
-        // only check checksum of header update
-        if(compute_checksum(hdr->update) != 0) return;
+    if(memcmp(hdr->ethernet.src_addr, SWITCH_INNER_MAC, sizeof(hdr->ethernet.src_addr)) != 0 ||
+        memcmp(hdr->ethernet.dst_addr, NFV_INNER_MAC, sizeof(hdr->ethernet.dst_addr)) != 0)
+        return;
+    if(hdr->ethernet.ether_type != htons(TYPE_METADATA)) 
+        return;
 
-        if(hdr->update.type == message_t::accept_update/* || hdr->update.type == message_t::reject_update*/)
-            ack_process(timestamp, packet_len, hdr);
-        else if(hdr->update.type == message_t::null || hdr->update.type == message_t::timeout) 
-            forward_process(timestamp, packet_len, hdr);
-    }
-    else if(hdr->ethernet.ether_type == htons(TYPE_IPV4)) 
-        backward_process(timestamp, packet_len, (backward_hdr_t *) hdr);
+    if(packet_len < sizeof(ethernet_t) + sizeof(nat_metadata_t)) 
+        return;
+    // only check checksum of header update
+    if(compute_checksum(hdr->metadata) != 0) return;
+
+    if(hdr->metadata.is_update && !hdr->metadata.is_to_in && !hdr->metadata.is_to_out)
+        ack_process(timestamp, packet_len, hdr);
+    else if(hdr->metadata.is_to_out && !hdr->metadata.is_to_in) 
+        forward_process(timestamp, packet_len, hdr);
+    else if(hdr->metadata.is_to_in && !hdr->metadata.is_to_out) 
+        backward_process(timestamp, packet_len, (hdr_t *) hdr);
 }
 
 void pcap_handle(u_char *user, const struct pcap_pkthdr *h, const u_char *bytes)
@@ -622,7 +696,7 @@ void pcap_handle(u_char *user, const struct pcap_pkthdr *h, const u_char *bytes)
     timespec tm;
     clock_gettime(CLOCK_MONOTONIC, &tm); // don't use pcap's clock
 
-    nat_process(tm.tv_sec * 1000000ull + tm.tv_nsec / 1000, h->len, (forward_hdr_t*)buf);
+    nat_process(tm.tv_sec * 1000000ull + tm.tv_nsec / 1000, h->len, (hdr_t*)buf);
 }
 
 int main(int argc, char **argv)

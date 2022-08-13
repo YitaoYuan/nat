@@ -17,7 +17,7 @@ const bit<8>  UDP_PROTOCOL = 0x11;
 const bit<8>  ICMP_PROTOCOL = 0x01;
 
 const bit<16> TYPE_IPV4 = 0x800;
-const bit<16> TYPE_UPDATE = SHARED_TYPE_UPDATE;
+const bit<16> TYPE_METADATA = SHARED_TYPE_METADATA;
 
 //you can change these by tables to support dynamic & multiple LAN address allocation
 const ip4_addr_t LAN_ADDR_START = SHARED_LAN_ADDR_START;// 192.168.11.0
@@ -97,18 +97,10 @@ header_union L4_header_t {
     udp_t udp;
 }
 
-enum transition_type {
-    ignore,
-    in2out,
-    out2in,
-    nfv_translation,
-    nfv_update
-}
-
 struct metadata {
     bool parse_error;
-
-    transition_type type;
+    bool control_ignore;
+    bool is_from_nfv;
 
     ipv4_flow_id_t  id;
 
@@ -120,14 +112,14 @@ struct metadata {
     bool            secondary_timeout;
     bool            match;
 
-    bool            verify_update;
+    bool            verify_metadata;
     bool            verify_ip;
     bool            verify_tcp;
     bool            verify_udp;
 
     bool            is_tcp;
 
-    bool            update_update;
+    bool            update_metadata;
     bool            update_ip;
     bool            update_tcp;
     bool            update_udp;
@@ -135,25 +127,16 @@ struct metadata {
     bit<16>         L4_length;
 }
 
-enum bit<16> message_t {
-    null = 0,
-    timeout = 1,
-    require_update = 2,
-    accept_update = 3
-    //reject_update = 4//看上去reject是不需要的？？？如果checksum failed直接drop不就好了？
-}
-
-header update_t {//36
+header nat_metadata_t {//36
     map_entry_t primary_map;
     map_entry_t secondary_map;
-    message_t type;
-    /* 
-    0: sw->NFV, nothing special, with payload
-    1: sw->NFV, "map" has timeout, with payload
-    2: NFV->sw, update map, no payload
-    3: sw->NFV, accept update, no payload
-    4: sw->NFV, reject upadte, no payload
-    */
+
+    bit         is_to_in;//最终会去往in
+    bit         is_to_out;
+    bit         is_update;
+
+    bit<13>     zero;
+
     index_t index; // index is the hash value of flow id
     time_t sw_time;
     time_t nfv_time;// 因为一个ACK返回的时候wait_entry可能已经没了，所以时间需要记录在packet里
@@ -162,7 +145,7 @@ header update_t {//36
 
 struct headers {
     ethernet_t          ethernet;
-    update_t            update;
+    nat_metadata_t      metadata;
     ipv4_t              ipv4;
     L4_header_t         L4_header;
 }
@@ -186,15 +169,18 @@ parser MyParser(packet_in packet,
         packet.extract(hdr.ethernet);
         transition select(hdr.ethernet.ether_type) {
             TYPE_IPV4: parse_ipv4;
-            TYPE_UPDATE: parse_update;
+            TYPE_METADATA: parse_metadata;
             default: myreject;
         }
     }
 
-    state parse_update {
-        packet.extract(hdr.update);
-        meta.verify_update = hdr.update.isValid();
-        transition myaccept;// the update packet from NFV doesn't has ipv4 header
+    state parse_metadata {
+        packet.extract(hdr.metadata);
+        meta.verify_metadata = hdr.metadata.isValid();
+        transition select(hdr.metadata.is_update) {
+            1w0: parse_ipv4;
+            1w1: myaccept;
+        }
     }
 
     state parse_ipv4 {
@@ -243,30 +229,34 @@ parser MyParser(packet_in packet,
 control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
     apply {
         
-        verify_checksum(meta.verify_update, 
-            {hdr.update.primary_map.id.src_addr, 
-            hdr.update.primary_map.id.dst_addr, 
-            hdr.update.primary_map.id.src_port, 
-            hdr.update.primary_map.id.dst_port, 
-            hdr.update.primary_map.id.protocol,
-            hdr.update.primary_map.id.zero,
-            hdr.update.primary_map.eport,
+        verify_checksum(meta.verify_metadata, 
+            {hdr.metadata.primary_map.id.src_addr, 
+            hdr.metadata.primary_map.id.dst_addr, 
+            hdr.metadata.primary_map.id.src_port, 
+            hdr.metadata.primary_map.id.dst_port, 
+            hdr.metadata.primary_map.id.protocol,
+            hdr.metadata.primary_map.id.zero,
+            hdr.metadata.primary_map.eport,
 
-            hdr.update.secondary_map.id.src_addr, 
-            hdr.update.secondary_map.id.dst_addr, 
-            hdr.update.secondary_map.id.src_port, 
-            hdr.update.secondary_map.id.dst_port, 
-            hdr.update.secondary_map.id.protocol,
-            hdr.update.secondary_map.id.zero,
-            hdr.update.secondary_map.eport,
+            hdr.metadata.secondary_map.id.src_addr, 
+            hdr.metadata.secondary_map.id.dst_addr, 
+            hdr.metadata.secondary_map.id.src_port, 
+            hdr.metadata.secondary_map.id.dst_port, 
+            hdr.metadata.secondary_map.id.protocol,
+            hdr.metadata.secondary_map.id.zero,
+            hdr.metadata.secondary_map.eport,
 
-            hdr.update.type,
-            hdr.update.index,
+            hdr.metadata.is_to_in,
+            hdr.metadata.is_to_out,
+            hdr.metadata.is_update,
+            hdr.metadata.zero,
+
+            hdr.metadata.index,
             
-            hdr.update.sw_time,
-            hdr.update.nfv_time
+            hdr.metadata.sw_time,
+            hdr.metadata.nfv_time
             },
-            hdr.update.checksum, HashAlgorithm.csum16);
+            hdr.metadata.checksum, HashAlgorithm.csum16);
 
         verify_checksum(meta.verify_ip, 
             {hdr.ipv4.version,
@@ -385,24 +375,48 @@ control MyIngress(inout headers hdr,
     }
 
     action get_transition_type() {
-        meta.type = transition_type.ignore;
+
+        meta.control_ignore = false;
 
         if(standard_metadata.ingress_port == NFV_PORT) {
-            if(hdr.ethernet.src_addr != NFV_INNER_MAC || hdr.ethernet.dst_addr != SWITCH_INNER_MAC)
-                return;
-            if(hdr.update.isValid())
-                meta.type = transition_type.nfv_update;
-            else 
-                meta.type = transition_type.nfv_translation;
-        }
-        if(hdr.update.isValid()) return;// only nfv packet contains update 
 
-        if(LAN_ADDR_START <= hdr.ipv4.src_addr && hdr.ipv4.src_addr < LAN_ADDR_END
-            && !(LAN_ADDR_START <= hdr.ipv4.dst_addr && hdr.ipv4.dst_addr < LAN_ADDR_END))
-            meta.type = transition_type.in2out;
-        else if(!(LAN_ADDR_START <= hdr.ipv4.src_addr && hdr.ipv4.src_addr < LAN_ADDR_END)
-            && hdr.ipv4.dst_addr == NAT_ADDR)
-            meta.type = transition_type.out2in;
+            meta.is_from_nfv = true;
+
+            if(hdr.ethernet.src_addr != NFV_INNER_MAC || 
+                hdr.ethernet.dst_addr != SWITCH_INNER_MAC ||
+                hdr.ethernet.ether_type != TYPE_METADATA) {// parser didn't check this
+                meta.control_ignore = true;
+                return;
+            }
+            if(hdr.metadata.zero != 0) {
+                meta.control_ignore = true;
+                return;
+            }
+            if( (bit<2>)hdr.metadata.is_to_in +
+                (bit<2>)hdr.metadata.is_to_out +
+                (bit<2>)hdr.metadata.is_update != 1) {
+                meta.control_ignore = true;
+                return;
+            } 
+        }
+        else {
+            meta.is_from_nfv = false;
+
+            if(LAN_ADDR_START <= hdr.ipv4.src_addr && hdr.ipv4.src_addr < LAN_ADDR_END
+                && !(LAN_ADDR_START <= hdr.ipv4.dst_addr && hdr.ipv4.dst_addr < LAN_ADDR_END)) {
+                hdr.metadata.is_to_in = 0;
+                hdr.metadata.is_to_out = 1;
+            }
+            else if(!(LAN_ADDR_START <= hdr.ipv4.src_addr && hdr.ipv4.src_addr < LAN_ADDR_END) 
+                && hdr.ipv4.dst_addr == NAT_ADDR) {
+                hdr.metadata.is_to_in = 1;
+                hdr.metadata.is_to_out = 0;
+            }
+            else {
+                meta.control_ignore = true;
+                return;
+            }
+        }
     }
 
     action get_id() {
@@ -456,10 +470,18 @@ control MyIngress(inout headers hdr,
             hdr.L4_header.udp.dst_port = meta.entry.map.id.src_port;
     }
 
-    action set_update() {
-        hdr.ethernet.ether_type = TYPE_UPDATE;
-        hdr.update.setValid();
-        hdr.update = {meta.entry.map, {meta.id, 0}, meta.primary_timeout? message_t.timeout: message_t.null, meta.index, meta.time, 0, 0};
+    action set_metadata(bool send_update) {
+        hdr.ethernet.ether_type = TYPE_METADATA;
+        hdr.metadata.primary_map = meta.entry.map;
+        hdr.metadata.secondary_map = {meta.id, 0};
+        //hdr.metadata.is_to_in
+        //hdr.metadata.is_to_out
+        hdr.metadata.is_update = send_update ? (bit)meta.primary_timeout : 1w0;
+        hdr.metadata.zero = 0;
+        hdr.metadata.index = meta.index;
+        hdr.metadata.sw_time = meta.time;
+        hdr.metadata.nfv_time = 0;
+        hdr.metadata.checksum = 0;
     }
 
     action send_to_NFV() {
@@ -476,133 +498,129 @@ control MyIngress(inout headers hdr,
         //if(hdr.ethernet.ether_type != TYPE_IPV4) {drop(); return;}
         // TODO******************************************************************
         // 还需要判断下DSTMAC是不是本地端口的MAC
+        if(!hdr.metadata.isValid()) hdr.metadata.setValid();
 
-
+        get_time();
         get_transition_type();
-        switch (meta.type) {
-            transition_type.out2in : {
-                port_t eport = meta.is_tcp? hdr.L4_header.tcp.dst_port : hdr.L4_header.udp.dst_port;
-                port_t src_port = meta.is_tcp? hdr.L4_header.tcp.src_port : hdr.L4_header.udp.src_port;
-                ip4_addr_t src_addr = hdr.ipv4.src_addr;
-                bit<8> protocol = hdr.ipv4.protocol;
-                
-                if(eport <= PORT_MIN || (bit<32>)eport >= PORT_MAX) {
-                    drop();
-                    return;
-                }
 
-                reverse_map.read(meta.index, (bit<32>)(eport - PORT_MIN));
+        if(meta.control_ignore) {
+            drop();
+            return;
+        }
+        
+        if(!meta.is_from_nfv && hdr.metadata.is_to_in == 1) {
+            port_t eport = meta.is_tcp? hdr.L4_header.tcp.dst_port : hdr.L4_header.udp.dst_port;
+            port_t src_port = meta.is_tcp? hdr.L4_header.tcp.src_port : hdr.L4_header.udp.src_port;
+            ip4_addr_t src_addr = hdr.ipv4.src_addr;
+            bit<8> protocol = hdr.ipv4.protocol;
 
-                if(meta.index == 0) { // not in switch
-                    send_to_NFV();
-                    return;
-                }
+            
+            if(eport <= PORT_MIN || (bit<32>)eport >= PORT_MAX) {
+                drop();
+                return;
+            }
 
-                assert(meta.index < SWITCH_PORT_NUM); //
+            reverse_map.read(meta.index, (bit<32>)(eport - PORT_MIN));
 
-                map_read(meta.entry, meta.index);
+            if(meta.index == 0) { // not in switch
+                set_metadata(false);
+                send_to_NFV();
+                return;
+            }
 
-                if(meta.entry.map.eport != eport) {//这个if是冗余的,因为不用的reverse_map会置零
-                    send_to_NFV();
-                    return;
-                }
+            assert(meta.index < SWITCH_PORT_NUM); //
 
-                ipv4_flow_id_t map_id = meta.entry.map.id;
+            map_read(meta.entry, meta.index);
 
-                get_time();
+            if(meta.entry.map.eport != eport) {//这个if是冗余的,因为不用的reverse_map会置零
+                set_metadata(false);
+                send_to_NFV();
+                return;
+            }
 
-                if({map_id.dst_addr, map_id.dst_port, map_id.protocol} != {src_addr, src_port, protocol}
-                    || meta.time - meta.entry.primary_time > AGING_TIME_US) {// mismatch or aging
-                    drop();
-                    return;
-                }
+            ipv4_flow_id_t map_id = meta.entry.map.id;
+
+            if({map_id.dst_addr, map_id.dst_port, map_id.protocol} != {src_addr, src_port, protocol}
+                || meta.time - meta.entry.primary_time > AGING_TIME_US) {// mismatch or aging
+                drop();
+                return;
+            }
+            meta.entry.primary_time = meta.time;
+            map_write(meta.index, meta.entry);
+
+            reverse_translate();
+            ip2port_dmac.apply();
+        }
+        else if(!meta.is_from_nfv && hdr.metadata.is_to_out == 1) {
+            get_id();
+            get_index();
+
+            read_entry();
+            
+            if(meta.entry.map.eport == 0 || (meta.primary_timeout && meta.secondary_timeout)) {
+                meta.entry.map.id = meta.id;
                 meta.entry.primary_time = meta.time;
+
+                if(meta.entry.map.eport == 0) { // initialize
+                    meta.entry.map.eport = meta.index + PORT_MIN;
+                    reverse_map.write((bit<32>)(meta.entry.map.eport - PORT_MIN), meta.index);
+                }
+                map_write(meta.index, meta.entry);// need to be atomic from read to write !!!
+                translate();
+                ip2port_dmac.apply();
+            }
+            else if(!meta.primary_timeout && meta.match) {
+                meta.entry.primary_time = meta.time;
+
+                map_write(meta.index, meta.entry);
+                translate();
+                ip2port_dmac.apply();
+            }
+            else {
+                meta.entry.secondary_time = meta.time;
+
                 map_write(meta.index, meta.entry);
 
-                reverse_translate();
-                ip2port_dmac.apply();
-            }
-            transition_type.in2out : {
-                get_id();
-                get_index();
-                get_time();
-
-                /////
-                if(meta.index != 1) {
-                    drop();
-                    return;
-                }
-
-                read_entry();
-                
-                if(meta.entry.map.eport == 0 || (meta.primary_timeout && meta.secondary_timeout)) {
-                    meta.entry.map.id = meta.id;
-                    meta.entry.primary_time = meta.time;
-
-                    if(meta.entry.map.eport == 0) { // initialize
-                        meta.entry.map.eport = meta.index + PORT_MIN;
-                        reverse_map.write((bit<32>)(meta.entry.map.eport - PORT_MIN), meta.index);
-                    }
-                    map_write(meta.index, meta.entry);// need to be atomic from read to write !!!
-                    translate();
-                    ip2port_dmac.apply();
-                }
-                else if(!meta.primary_timeout && meta.match) {
-                    meta.entry.primary_time = meta.time;
-
-                    map_write(meta.index, meta.entry);
-                    translate();
-                    ip2port_dmac.apply();
-                }
-                else {
-                    meta.entry.secondary_time = meta.time;
-
-                    map_write(meta.index, meta.entry);
-
-                    set_update();
-                    send_to_NFV();
-                } 
-            }
-            transition_type.nfv_translation : {
-                ip2port_dmac.apply();
-            }
-            transition_type.nfv_update : {
-                get_time();
-                meta.index = hdr.update.index;
-
-                if(hdr.update.type != message_t.require_update || 
-                    meta.time - hdr.update.sw_time > AGING_TIME_US / 2 || 
-                    meta.index >= SWITCH_PORT_NUM) {
-                    drop();
-                    return;
-                }
-
-                map_read(meta.entry, meta.index);
-
-                if(meta.entry.map != hdr.update.primary_map && 
-                    meta.entry.map != hdr.update.secondary_map) {
-                    drop();
-                    return;
-                }
-                    
-                
-                if(meta.entry.map == hdr.update.primary_map) {
-                    meta.entry.map = hdr.update.secondary_map;
-                    meta.entry.primary_time = meta.time;
-
-                    reverse_map.write((bit<32>)(hdr.update.primary_map.eport - PORT_MIN), (index_t)0);
-                    reverse_map.write((bit<32>)(hdr.update.secondary_map.eport - PORT_MIN), meta.index);
-
-                    map_write(meta.index, meta.entry);
-                }
-                //if meta.entry.map == hdr.update.secondary_map return a redundent ACK
-
-                hdr.update.type = message_t.accept_update;
+                set_metadata(true);
                 send_to_NFV();
-            }
-            default : {
+            } 
+        }
+        else if(meta.is_from_nfv && hdr.metadata.is_to_in == 1) {
+            ip2port_dmac.apply();
+        }
+        else if(meta.is_from_nfv && hdr.metadata.is_to_out == 1) {
+            ip2port_dmac.apply();
+        }
+        else if(meta.is_from_nfv && hdr.metadata.is_update == 1) {
+            meta.index = hdr.metadata.index;
+
+            if( meta.time - hdr.metadata.sw_time > AGING_TIME_US / 2 || 
+                meta.index >= SWITCH_PORT_NUM) {
                 drop();
+                return;
             }
+
+            map_read(meta.entry, meta.index);
+
+            if(meta.entry.map != hdr.metadata.primary_map && 
+                meta.entry.map != hdr.metadata.secondary_map) {
+                drop();
+                return;
+            }
+                
+            
+            if(meta.entry.map == hdr.metadata.primary_map) {
+                meta.entry.map = hdr.metadata.secondary_map;
+                meta.entry.primary_time = meta.time;
+
+                reverse_map.write((bit<32>)(hdr.metadata.primary_map.eport - PORT_MIN), (index_t)0);
+                reverse_map.write((bit<32>)(hdr.metadata.secondary_map.eport - PORT_MIN), meta.index);
+
+                map_write(meta.index, meta.entry);
+            }
+            //if meta.entry.map == hdr.metadata.secondary_map return a redundent ACK
+
+            send_to_NFV();
         }
     }
 }
@@ -630,12 +648,15 @@ control MyEgress(inout headers hdr,
     }
 
     apply{
-        meta.update_update = hdr.update.isValid();
+        meta.update_metadata = hdr.metadata.isValid();
         meta.update_ip = hdr.ipv4.isValid();
         meta.update_tcp = hdr.L4_header.tcp.isValid();
         meta.update_udp = hdr.L4_header.udp.isValid() && (hdr.L4_header.udp.checksum != 0);
-        if(standard_metadata.egress_port != NFV_PORT)
+        if(standard_metadata.egress_port != NFV_PORT) {
+            hdr.metadata.setInvalid();
+            hdr.ethernet.ether_type = TYPE_IPV4;
             port2smac.apply();
+        }
     }
 }
 
@@ -646,30 +667,34 @@ control MyEgress(inout headers hdr,
 control MyComputeChecksum(inout headers hdr, inout metadata meta) {
     apply {
         
-        update_checksum(meta.update_update, 
-            {hdr.update.primary_map.id.src_addr, 
-            hdr.update.primary_map.id.dst_addr, 
-            hdr.update.primary_map.id.src_port, 
-            hdr.update.primary_map.id.dst_port, 
-            hdr.update.primary_map.id.protocol,
-            hdr.update.primary_map.id.zero,
-            hdr.update.primary_map.eport,
+        update_checksum(meta.update_metadata, 
+            {hdr.metadata.primary_map.id.src_addr, 
+            hdr.metadata.primary_map.id.dst_addr, 
+            hdr.metadata.primary_map.id.src_port, 
+            hdr.metadata.primary_map.id.dst_port, 
+            hdr.metadata.primary_map.id.protocol,
+            hdr.metadata.primary_map.id.zero,
+            hdr.metadata.primary_map.eport,
 
-            hdr.update.secondary_map.id.src_addr, 
-            hdr.update.secondary_map.id.dst_addr, 
-            hdr.update.secondary_map.id.src_port, 
-            hdr.update.secondary_map.id.dst_port, 
-            hdr.update.secondary_map.id.protocol,
-            hdr.update.secondary_map.id.zero,
-            hdr.update.secondary_map.eport,
+            hdr.metadata.secondary_map.id.src_addr, 
+            hdr.metadata.secondary_map.id.dst_addr, 
+            hdr.metadata.secondary_map.id.src_port, 
+            hdr.metadata.secondary_map.id.dst_port, 
+            hdr.metadata.secondary_map.id.protocol,
+            hdr.metadata.secondary_map.id.zero,
+            hdr.metadata.secondary_map.eport,
 
-            hdr.update.type,
-            hdr.update.index,
+            hdr.metadata.is_to_in,
+            hdr.metadata.is_to_out,
+            hdr.metadata.is_update,
+            hdr.metadata.zero,
 
-            hdr.update.sw_time,
-            hdr.update.nfv_time
+            hdr.metadata.index,
+
+            hdr.metadata.sw_time,
+            hdr.metadata.nfv_time
             },
-            hdr.update.checksum, HashAlgorithm.csum16);
+            hdr.metadata.checksum, HashAlgorithm.csum16);
 
         update_checksum(meta.update_ip, 
             {hdr.ipv4.version,
@@ -718,7 +743,7 @@ control MyComputeChecksum(inout headers hdr, inout metadata meta) {
 control MyDeparser(packet_out packet, in headers hdr) {
     apply {
         packet.emit(hdr.ethernet);
-        packet.emit(hdr.update);
+        packet.emit(hdr.metadata);
         packet.emit(hdr.ipv4);
         packet.emit(hdr.L4_header);
     }
