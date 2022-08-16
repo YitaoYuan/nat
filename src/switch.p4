@@ -528,7 +528,7 @@ control MyIngress(inout headers hdr,
                 return;
             }
 
-            assert(meta.index < SWITCH_PORT_NUM); //
+            //assert(meta.index < SWITCH_PORT_NUM); //
 
             map_read(meta.entry, meta.index);
 

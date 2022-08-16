@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -e
+
 CMD_PREFIX="ip netns exec sw"
 
 IP_PREFIX="192.168"
