@@ -82,11 +82,6 @@ header udp_t{
     bit<16> checksum;
 }
 
-header_union L4_header_t {
-    tcp_t tcp;
-    udp_t udp;
-}
-
 struct metadata {
     bool parse_error;
     bool checksum_error;
@@ -139,7 +134,8 @@ struct headers {
     ethernet_t          ethernet;
     nat_metadata_t      metadata;
     ipv4_t              ipv4;
-    L4_header_t         L4_header;
+    tcp_t               tcp;
+    udp_t               udp;
 }
 
 
@@ -190,16 +186,16 @@ parser MyParser(packet_in packet,
     }
 
     state parse_tcp {
-        packet.extract(hdr.L4_header.tcp);
-        meta.verify_tcp = hdr.L4_header.tcp.isValid();
+        packet.extract(hdr.tcp);
+        meta.verify_tcp = hdr.tcp.isValid();
         meta.is_tcp = true;
         transition myaccept;
     }
 
     state parse_udp {
-        packet.extract(hdr.L4_header.udp);
+        packet.extract(hdr.udp);
         meta.is_tcp = false;
-        meta.verify_udp = hdr.L4_header.udp.isValid() && hdr.L4_header.udp.checksum != 0;
+        meta.verify_udp = hdr.udp.isValid() && hdr.udp.checksum != 0;
         transition myaccept;
     }
 
@@ -274,16 +270,7 @@ control MyEgress(inout headers hdr,
     }
 
     apply{
-        meta.update_metadata = hdr.metadata.isValid();
-        meta.update_ip = hdr.ipv4.isValid();
-        meta.update_tcp = hdr.L4_header.tcp.isValid();
-        meta.update_udp = hdr.L4_header.udp.isValid() && (hdr.L4_header.udp.checksum != 0);
-        if(standard_metadata.egress_port != NFV_PORT) {
-            hdr.metadata.setInvalid();
-            hdr.ethernet.ether_type = TYPE_IPV4;
-            port2smac.apply();
-        }
-        MyComputeChecksum.apply(hdr, meta);
+    
     }
 }
 
@@ -306,7 +293,8 @@ control MyDeparser(packet_out packet, in headers hdr) {
         packet.emit(hdr.ethernet);
         packet.emit(hdr.metadata);
         packet.emit(hdr.ipv4);
-        packet.emit(hdr.L4_header);
+        packet.emit(hdr.tcp);
+        packet.emit(hdr.udp);
     }
 }
 
