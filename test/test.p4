@@ -158,56 +158,35 @@ parser MyParser(packet_in packet,
         transition select(hdr.ethernet.ether_type) {
             TYPE_IPV4: parse_ipv4;
             TYPE_METADATA: parse_metadata;
-            default: myreject;
         }
     }
 
     state parse_metadata {
         packet.extract(hdr.metadata);
-        meta.verify_metadata = hdr.metadata.isValid();
         transition select(hdr.metadata.is_update) {
             1w0: parse_ipv4;
-            1w1: myaccept;
+            1w1: accept;
         }
     }
 
     state parse_ipv4 {
         packet.extract(hdr.ipv4);
-        meta.verify_ip = hdr.ipv4.isValid();
-        meta.L4_length = hdr.ipv4.total_length - (bit<16>)hdr.ipv4.ihl * 4;
-        //verify(hdr.ipv4.version == 4, error.NoMatch);
-        //verify(hdr.ipv4.ihl == 5, error.NoMatch);// drop all packet with ihl > 5
-        bit chk = (bit)(hdr.ipv4.version == 4 && hdr.ipv4.ihl == 5);
-        transition select(hdr.ipv4.protocol ++ chk) {
-            TCP_PROTOCOL ++ 1w1: parse_tcp;
-            UDP_PROTOCOL ++ 1w1: parse_udp;
-            default: myreject;
+        transition select(hdr.ipv4.protocol) {
+            TCP_PROTOCOL: parse_tcp;
+            UDP_PROTOCOL: parse_udp;
         }
     }
 
     state parse_tcp {
         packet.extract(hdr.tcp);
-        meta.verify_tcp = hdr.tcp.isValid();
-        meta.is_tcp = true;
-        transition myaccept;
+        transition accept;
     }
 
     state parse_udp {
         packet.extract(hdr.udp);
-        meta.is_tcp = false;
-        meta.verify_udp = hdr.udp.isValid() && hdr.udp.checksum != 0;
-        transition myaccept;
-    }
-
-    state myreject {
-        meta.parse_error = true;
         transition accept;
     }
 
-    state myaccept {
-        meta.parse_error = false;
-        transition accept;
-    }
 }
 
 
