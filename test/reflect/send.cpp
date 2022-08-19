@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <queue>
 #include <cstdlib>
+#include <arpa/inet.h>
 
 using std::unordered_map;
 using std::queue;
@@ -51,7 +52,8 @@ pcap_t *device;
 void send_refelect(u8 enable_reflect)
 {
     hdr_t * hdr = (hdr_t*)buf;
-    hdr->ethernet = {{0, 0, 0, 0, 0, 2}, {0, 0, 0, 0, 0, 1}, htons(TYPE_REFLECT)};
+    //hdr->ethernet.dst_addr = 1;
+    hdr->ethernet = (ethernet_t){{0, 0, 0, 0, 0, 2}, {0, 0, 0, 0, 0, 1}, (u16)htons(TYPE_REFLECT)};
     hdr->reflect = {enable_reflect};
     pcap_sendpacket(device, (u_char *)hdr, sizeof(*hdr));
 }

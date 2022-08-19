@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <queue>
 #include <cstdlib>
+#include <arpa/inet.h>
 #include "shared_metadata.h"
 
 using std::unordered_map;
