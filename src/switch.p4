@@ -130,7 +130,7 @@ struct metadata {
 }
 
 header nat_metadata_t {//36
-    map_entry_t primary_map;
+    map_entry_t primary_map;//！！！！！！！！！！！！！！！！！写小程序验证一下服务器不允许在header里写struct
     map_entry_t secondary_map;
 
     bit         is_to_in;//最终会去往in
