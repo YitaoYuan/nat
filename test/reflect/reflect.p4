@@ -83,17 +83,19 @@ control MyIngress(inout headers hdr,
     action drop() {
         mark_to_drop(standard_metadata);
     }
-
     table reflect_table {//static L2 forward, need static ARP table on hosts
-        key = {
-            hdr.reflect.enable_reflect: exact;
-        }
         actions = {
             reflect_packet();
             drop();
         }
-        size = 16;
+        size = 1;
+        /*
+        key = {
+            hdr.reflect.enable_reflect: exact;
+        }
         default_action = drop();
+        */
+        default_action = reflect_packet();
     }
 
     apply {
