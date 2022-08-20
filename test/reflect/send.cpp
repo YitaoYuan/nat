@@ -53,7 +53,7 @@ void send_refelect(u8 enable_reflect)
 {
     hdr_t * hdr = (hdr_t*)buf;
     //hdr->ethernet.dst_addr = 1;
-    hdr->ethernet = (ethernet_t){{0, 0, 0, 0, 0, 2}, {0, 0, 0, 0, 0, 1}, (u16)htons(TYPE_REFLECT)};
+    hdr->ethernet = (ethernet_t){{0x0a, 0x5d, 0xf2, 0x7e, 0xef, 0x81}, {0x26, 0x48, 0xfe, 0xa2, 0xfc, 0x03}, (u16)htons(TYPE_REFLECT)};
     hdr->reflect = {enable_reflect};
     pcap_sendpacket(device, (u_char *)hdr, sizeof(*hdr));
 }
