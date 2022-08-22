@@ -38,13 +38,6 @@
         ["srcAddr", 48, false],
         ["etherType", 16, false]
       ]
-    },
-    {
-      "name" : "reflect_t",
-      "id" : 3,
-      "fields" : [
-        ["enable_reflect", 8, false]
-      ]
     }
   ],
   "headers" : [
@@ -66,13 +59,6 @@
       "name" : "ethernet",
       "id" : 2,
       "header_type" : "ethernet_t",
-      "metadata" : false,
-      "pi_omit" : true
-    },
-    {
-      "name" : "reflect",
-      "id" : 3,
-      "header_type" : "reflect_t",
       "metadata" : false,
       "pi_omit" : true
     }
@@ -114,35 +100,6 @@
           ],
           "transitions" : [
             {
-              "type" : "hexstr",
-              "value" : "0x88b5",
-              "mask" : null,
-              "next_state" : "parse_reflect"
-            }
-          ],
-          "transition_key" : [
-            {
-              "type" : "field",
-              "value" : ["ethernet", "etherType"]
-            }
-          ]
-        },
-        {
-          "name" : "parse_reflect",
-          "id" : 1,
-          "parser_ops" : [
-            {
-              "parameters" : [
-                {
-                  "type" : "regular",
-                  "value" : "reflect"
-                }
-              ],
-              "op" : "extract"
-            }
-          ],
-          "transitions" : [
-            {
               "type" : "default",
               "value" : null,
               "mask" : null,
@@ -161,11 +118,11 @@
       "id" : 0,
       "source_info" : {
         "filename" : "reflect.p4",
-        "line" : 130,
+        "line" : 117,
         "column" : 8,
         "source_fragment" : "MyDeparser"
       },
-      "order" : ["ethernet", "reflect"],
+      "order" : ["ethernet"],
       "primitives" : []
     }
   ],
@@ -194,7 +151,7 @@
           ],
           "source_info" : {
             "filename" : "reflect.p4",
-            "line" : 77,
+            "line" : 64,
             "column" : 8,
             "source_fragment" : "bit<48> tmp = hdr.ethernet.dstAddr;"
           }
@@ -213,7 +170,7 @@
           ],
           "source_info" : {
             "filename" : "reflect.p4",
-            "line" : 78,
+            "line" : 65,
             "column" : 8,
             "source_fragment" : "hdr.ethernet.dstAddr = hdr.ethernet.srcAddr"
           }
@@ -232,7 +189,7 @@
           ],
           "source_info" : {
             "filename" : "reflect.p4",
-            "line" : 79,
+            "line" : 66,
             "column" : 8,
             "source_fragment" : "hdr.ethernet.srcAddr = tmp"
           }
@@ -251,7 +208,7 @@
           ],
           "source_info" : {
             "filename" : "reflect.p4",
-            "line" : 80,
+            "line" : 67,
             "column" : 8,
             "source_fragment" : "standard_metadata.egress_spec = standard_metadata.ingress_port"
           }
@@ -273,7 +230,7 @@
           ],
           "source_info" : {
             "filename" : "reflect.p4",
-            "line" : 84,
+            "line" : 71,
             "column" : 8,
             "source_fragment" : "mark_to_drop(standard_metadata)"
           }
@@ -287,7 +244,7 @@
       "id" : 0,
       "source_info" : {
         "filename" : "reflect.p4",
-        "line" : 73,
+        "line" : 60,
         "column" : 8,
         "source_fragment" : "MyIngress"
       },
@@ -298,7 +255,7 @@
           "id" : 0,
           "source_info" : {
             "filename" : "reflect.p4",
-            "line" : 86,
+            "line" : 73,
             "column" : 10,
             "source_fragment" : "reflect_table"
           },
@@ -332,7 +289,7 @@
       "id" : 1,
       "source_info" : {
         "filename" : "reflect.p4",
-        "line" : 110,
+        "line" : 97,
         "column" : 8,
         "source_fragment" : "MyEgress"
       },

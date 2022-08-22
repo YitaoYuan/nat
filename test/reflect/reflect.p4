@@ -2,8 +2,6 @@
 #include <core.p4>
 #include <v1model.p4>
 
-const bit<16> TYPE_REFLECT = 0x88B5;
-
 /*************************************************************************
 *********************** H E A D E R S  ***********************************
 *************************************************************************/
@@ -18,17 +16,12 @@ header ethernet_t {
     bit<16>   etherType;
 }
 
-header reflect_t {
-    bit<8> enable_reflect;
-}
-
 struct metadata {
     /* empty */
 }
 
 struct headers {
     ethernet_t   ethernet;
-    reflect_t    reflect;
 }
 
 /*************************************************************************
@@ -46,15 +39,9 @@ parser MyParser(packet_in packet,
 
     state parse_ethernet {
         packet.extract(hdr.ethernet);
-        transition select(hdr.ethernet.etherType) {
-            TYPE_REFLECT : parse_reflect;
-        }
-    }
-
-    state parse_reflect {
-        packet.extract(hdr.reflect);
         transition accept;
     }
+
 }
 
 /*************************************************************************
@@ -130,7 +117,6 @@ control MyComputeChecksum(inout headers  hdr, inout metadata meta) {
 control MyDeparser(packet_out packet, in headers hdr) {
     apply {
         packet.emit(hdr.ethernet);
-        packet.emit(hdr.reflect);
     }
 }
 
