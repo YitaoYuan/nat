@@ -11,6 +11,12 @@
 #include <arpa/inet.h>
 #include "shared_metadata.h"
 
+#ifdef DEBUG
+#define debug_printf(...) fprintf(stderr, __VA_ARGS__)
+#else
+#define debug_printf(...)
+#endif
+
 using std::unordered_map;
 using std::queue;
 using std::make_pair;
@@ -285,6 +291,28 @@ list_entry_t *port_host_to_entry(port_t port)
     return &reverse_map[port - PORT_MIN];
 }
 
+void print_map(flow_id_t id, port_t eport_host, port_t index)
+{
+    debug_printf("(src=%d.%d.%d.%d:%d, dst=%d.%d.%d.%d:%d, protocal=%d) -> (eport %d, index %d)\n", 
+        ((u8*)&id.src_addr)[0],
+        ((u8*)&id.src_addr)[1],
+        ((u8*)&id.src_addr)[2],
+        ((u8*)&id.src_addr)[3],
+        ntohs(id.src_port),
+
+        ((u8*)&id.dst_addr)[0],
+        ((u8*)&id.dst_addr)[1],
+        ((u8*)&id.dst_addr)[2],
+        ((u8*)&id.dst_addr)[3],
+        ntohs(id.dst_port),
+
+        id.protocol,
+
+        eport_host,
+        index
+    );
+}
+
 void nfv_init()
 {
     avail_port_leader = &avail_port_leader_data;
@@ -371,7 +399,7 @@ port_t heavy_hitter_get(port_t bucket_index)
 
 void send_back(hdr_t * hdr, size_t len)
 {
-    //fprintf(stderr, "send_back\n");
+    //debug_printf("send_back\n");
     memcpy(hdr->ethernet.dst_addr, SWITCH_INNER_MAC, sizeof(hdr->ethernet.dst_addr));
     memcpy(hdr->ethernet.src_addr, NFV_INNER_MAC, sizeof(hdr->ethernet.src_addr));
     pcap_sendpacket(device, (u_char *)hdr, len);
@@ -401,6 +429,12 @@ void send_update(port_t index)
 
     hdr->ethernet.ether_type = htons(TYPE_METADATA);
     send_back(hdr, sizeof(hdr->ethernet) + sizeof(hdr->metadata));
+
+    debug_printf("\nsend update\n");
+    debug_printf("primary\n");
+    print_map(wait_set[index].primary_map.id, ntohs(wait_set[index].primary_map.eport), index);
+    debug_printf("secondary\n");
+    print_map(wait_set[index].secondary_map.id, ntohs(wait_set[index].secondary_map.eport), index);
 }
 
 
@@ -585,23 +619,23 @@ void backward_process(mytime_t timestamp, len_t packet_len, hdr_t * const hdr)
 
 void ack_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
 {
-    //fprintf(stderr, "receive ACK\n");
+    //debug_printf("receive ACK\n");
     // only hdr.ethernet & hdr.metadata is valid
     assert(hdr->metadata.is_update);
     
     if(timestamp - ntohl(hdr->metadata.nfv_time_net) > AGING_TIME_US / 2) return;
-    //fprintf(stderr, "1\n");
+    //debug_printf("1\n");
     port_t index = ntohs(hdr->metadata.index);
     if(index >= SWITCH_PORT_NUM) return; // if checksum is right, this could not happen
-    //fprintf(stderr, "2\n");
+    //debug_printf("2\n");
     wait_entry_t *wait_entry = &wait_set[index];
     if(!wait_entry -> is_waiting) return; // Redundant ACK
-    //fprintf(stderr, "3\n");
+    //debug_printf("3\n");
     // mismatch
     if(memcmp(&wait_entry->primary_map, &hdr->metadata.primary_map, sizeof(map_entry_t)) != 0 ||
         memcmp(&wait_entry->secondary_map, &hdr->metadata.secondary_map, sizeof(map_entry_t)) != 0) 
         return;
-    //fprintf(stderr, "4\n");
+    //debug_printf("4\n");
     list_entry_t *entry_sw = port_host_to_entry(ntohs(hdr->metadata.primary_map.eport));
     list_entry_t *entry_nfv = port_host_to_entry(ntohs(hdr->metadata.secondary_map.eport));
 
@@ -617,6 +651,12 @@ void ack_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
     list_move_to_back(avail_port_leader, entry_sw);// sw->avail
     list_move_to_back(sw_port_leader, entry_nfv);// inuse->sw
     list_erase(wait_entry);
+
+    debug_printf("\nreceive ACK\n");
+    debug_printf("primary\n");
+    print_map(hdr->metadata.primary_map.id, ntohs(hdr->metadata.primary_map.eport), index);
+    debug_printf("secondary\n");
+    print_map(hdr->metadata.secondary_map.id, ntohs(hdr->metadata.secondary_map.eport), index);
 }
 
 void do_aging(mytime_t timestamp)
@@ -636,10 +676,23 @@ void do_aging(mytime_t timestamp)
         assert(erase_res == 1); 
     }
     // for debug
+    static mytime_t last_timestamp = 0;
+    if(timestamp - last_timestamp < 200000) return;
+    last_timestamp = timestamp;    
+
+
+    putchar('\n');
     list_entry_t *entry = list_front(inuse_port_leader);
     int cnt = 0;
-    while(entry != inuse_port_leader) cnt++, entry = entry->r;
-    printf("%d active flows\n", cnt);
+    while(entry != inuse_port_leader) {
+        flow_id_t id = entry->id;
+        port_t index = entry->index;
+        port_t eport = entry_to_port_host(entry);
+        print_map(id, eport, index);
+        cnt++;
+        entry = entry->r;
+    }
+    debug_printf("%d active flows\n", cnt);
 }
 
 void report_wait_time_too_long()

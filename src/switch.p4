@@ -130,8 +130,21 @@ struct metadata {
 }
 
 header nat_metadata_t {//36
-    map_entry_t primary_map;//！！！！！！！！！！！！！！！！！写小程序验证一下服务器不允许在header里写struct
-    map_entry_t secondary_map;
+    ip4_addr_t  primary_map_src_addr;
+    ip4_addr_t  primary_map_dst_addr;
+    port_t      primary_map_src_port;
+    port_t      primary_map_dst_port;
+    bit<8>      primary_map_protocol;
+    bit<8>      primary_map_zero;
+    port_t      primary_map_eport;
+
+    ip4_addr_t  secondary_map_src_addr;
+    ip4_addr_t  secondary_map_dst_addr;
+    port_t      secondary_map_src_port;
+    port_t      secondary_map_dst_port;
+    bit<8>      secondary_map_protocol;
+    bit<8>      secondary_map_zero;
+    port_t      secondary_map_eport;
 
     bit         is_to_in;//最终会去往in
     bit         is_to_out;
@@ -241,21 +254,21 @@ control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
         meta.checksum_error = false;
         if(meta.verify_metadata) {
             hash(checksum, HashAlgorithm.csum16, 32w0,
-            {hdr.metadata.primary_map.id.src_addr, 
-            hdr.metadata.primary_map.id.dst_addr, 
-            hdr.metadata.primary_map.id.src_port, 
-            hdr.metadata.primary_map.id.dst_port, 
-            hdr.metadata.primary_map.id.protocol,
-            hdr.metadata.primary_map.id.zero,
-            hdr.metadata.primary_map.eport,
+            {hdr.metadata.primary_map_src_addr, 
+            hdr.metadata.primary_map_dst_addr, 
+            hdr.metadata.primary_map_src_port, 
+            hdr.metadata.primary_map_dst_port, 
+            hdr.metadata.primary_map_protocol,
+            hdr.metadata.primary_map_zero,
+            hdr.metadata.primary_map_eport,
 
-            hdr.metadata.secondary_map.id.src_addr, 
-            hdr.metadata.secondary_map.id.dst_addr, 
-            hdr.metadata.secondary_map.id.src_port, 
-            hdr.metadata.secondary_map.id.dst_port, 
-            hdr.metadata.secondary_map.id.protocol,
-            hdr.metadata.secondary_map.id.zero,
-            hdr.metadata.secondary_map.eport,
+            hdr.metadata.secondary_map_src_addr, 
+            hdr.metadata.secondary_map_dst_addr, 
+            hdr.metadata.secondary_map_src_port, 
+            hdr.metadata.secondary_map_dst_port, 
+            hdr.metadata.secondary_map_protocol,
+            hdr.metadata.secondary_map_zero,
+            hdr.metadata.secondary_map_eport,
 
             hdr.metadata.is_to_in,
             hdr.metadata.is_to_out,
@@ -566,8 +579,27 @@ control MyIngress(inout headers hdr,
 
     action set_metadata(bool send_update) {
         hdr.ethernet.ether_type = TYPE_METADATA;
-        hdr.metadata.primary_map = meta.entry.map;
-        hdr.metadata.secondary_map = {meta.id, 0};
+
+        // Why p4c for tofino does not support "struct in header" ???
+        hdr.metadata.primary_map_src_addr = meta.entry.map.id.src_addr;
+        hdr.metadata.primary_map_dst_addr = meta.entry.map.id.dst_addr;
+        hdr.metadata.primary_map_src_port = meta.entry.map.id.src_port;
+        hdr.metadata.primary_map_dst_port = meta.entry.map.id.dst_port;
+        hdr.metadata.primary_map_protocol = meta.entry.map.id.protocol;
+        hdr.metadata.primary_map_zero = meta.entry.map.id.zero;
+        hdr.metadata.primary_map_eport = meta.entry.map.eport;
+
+        hdr.metadata.secondary_map_src_addr = meta.id.src_addr;
+        hdr.metadata.secondary_map_dst_addr = meta.id.dst_addr;
+        hdr.metadata.secondary_map_src_port = meta.id.src_port;
+        hdr.metadata.secondary_map_dst_port = meta.id.dst_port;
+        hdr.metadata.secondary_map_protocol = meta.id.protocol;
+        hdr.metadata.secondary_map_zero = meta.id.zero;
+        hdr.metadata.secondary_map_eport = 0;
+        
+        //hdr.metadata.primary_map = meta.entry.map;
+        //hdr.metadata.secondary_map = {meta.id, 0};
+        
         //hdr.metadata.is_to_in
         //hdr.metadata.is_to_out
         hdr.metadata.is_update = send_update ? (bit)meta.primary_timeout : 1w0;
@@ -698,19 +730,44 @@ control MyIngress(inout headers hdr,
 
             map_read(meta.entry, meta.index);
 
-            if(meta.entry.map != hdr.metadata.primary_map && 
-                meta.entry.map != hdr.metadata.secondary_map) {
+            bool primary_map_match = 
+                meta.entry.map.id.src_addr == hdr.metadata.primary_map_src_addr
+                && meta.entry.map.id.dst_addr == hdr.metadata.primary_map_dst_addr
+                && meta.entry.map.id.src_port == hdr.metadata.primary_map_src_port
+                && meta.entry.map.id.dst_port == hdr.metadata.primary_map_dst_port
+                && meta.entry.map.id.protocol == hdr.metadata.primary_map_protocol
+                && meta.entry.map.id.zero == hdr.metadata.primary_map_zero
+                && meta.entry.map.eport == hdr.metadata.primary_map_eport;
+            
+            bool secondary_map_match = 
+                meta.entry.map.id.src_addr == hdr.metadata.secondary_map_src_addr
+                && meta.entry.map.id.dst_addr == hdr.metadata.secondary_map_dst_addr
+                && meta.entry.map.id.src_port == hdr.metadata.secondary_map_src_port
+                && meta.entry.map.id.dst_port == hdr.metadata.secondary_map_dst_port
+                && meta.entry.map.id.protocol == hdr.metadata.secondary_map_protocol
+                && meta.entry.map.id.zero == hdr.metadata.secondary_map_zero
+                && meta.entry.map.eport == hdr.metadata.secondary_map_eport;
+
+            if(!primary_map_match && !secondary_map_match) {
                 drop();
                 return;
             }
                 
-            
-            if(meta.entry.map == hdr.metadata.primary_map) {
-                meta.entry.map = hdr.metadata.secondary_map;
+            if(primary_map_match) {
+                meta.entry.map = {
+                    {hdr.metadata.secondary_map_src_addr,
+                    hdr.metadata.secondary_map_dst_addr,
+                    hdr.metadata.secondary_map_src_port,
+                    hdr.metadata.secondary_map_dst_port,
+                    hdr.metadata.secondary_map_protocol,
+                    hdr.metadata.secondary_map_zero},
+                    hdr.metadata.secondary_map_eport
+                };
+
                 meta.entry.primary_time = meta.time;
 
-                reverse_map.write((bit<32>)(hdr.metadata.primary_map.eport - PORT_MIN), (index_t)0);
-                reverse_map.write((bit<32>)(hdr.metadata.secondary_map.eport - PORT_MIN), meta.index);
+                reverse_map.write((bit<32>)(hdr.metadata.primary_map_eport - PORT_MIN), (index_t)0);
+                reverse_map.write((bit<32>)(hdr.metadata.secondary_map_eport - PORT_MIN), meta.index);
 
                 map_write(meta.index, meta.entry);
             }
@@ -731,21 +788,21 @@ control MyComputeChecksum(inout headers hdr, inout metadata meta) {
 
         if(meta.update_metadata) {
             hash(hdr.metadata.checksum, HashAlgorithm.csum16, 32w0,
-            {hdr.metadata.primary_map.id.src_addr, 
-            hdr.metadata.primary_map.id.dst_addr, 
-            hdr.metadata.primary_map.id.src_port, 
-            hdr.metadata.primary_map.id.dst_port, 
-            hdr.metadata.primary_map.id.protocol,
-            hdr.metadata.primary_map.id.zero,
-            hdr.metadata.primary_map.eport,
+            {hdr.metadata.primary_map_src_addr, 
+            hdr.metadata.primary_map_dst_addr, 
+            hdr.metadata.primary_map_src_port, 
+            hdr.metadata.primary_map_dst_port, 
+            hdr.metadata.primary_map_protocol,
+            hdr.metadata.primary_map_zero,
+            hdr.metadata.primary_map_eport,
 
-            hdr.metadata.secondary_map.id.src_addr, 
-            hdr.metadata.secondary_map.id.dst_addr, 
-            hdr.metadata.secondary_map.id.src_port, 
-            hdr.metadata.secondary_map.id.dst_port, 
-            hdr.metadata.secondary_map.id.protocol,
-            hdr.metadata.secondary_map.id.zero,
-            hdr.metadata.secondary_map.eport,
+            hdr.metadata.secondary_map_src_addr, 
+            hdr.metadata.secondary_map_dst_addr, 
+            hdr.metadata.secondary_map_src_port, 
+            hdr.metadata.secondary_map_dst_port, 
+            hdr.metadata.secondary_map_protocol,
+            hdr.metadata.secondary_map_zero,
+            hdr.metadata.secondary_map_eport,
 
             hdr.metadata.is_to_in,
             hdr.metadata.is_to_out,

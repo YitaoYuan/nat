@@ -12,3 +12,5 @@
 
 #define SHARED_SWITCH_INNER_MAC 0x1
 #define SHARED_NFV_INNER_MAC 0x2
+
+//#define DEBUG 1
