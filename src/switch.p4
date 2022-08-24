@@ -92,11 +92,6 @@ header udp_t{
     bit<16> checksum;
 }
 
-header_union L4_header_t {
-    tcp_t tcp;
-    udp_t udp;
-}
-
 struct metadata {
     bool parse_error;
     bool checksum_error;
@@ -162,7 +157,8 @@ struct headers {
     ethernet_t          ethernet;
     nat_metadata_t      metadata;
     ipv4_t              ipv4;
-    L4_header_t         L4_header;
+    tcp_t               tcp;
+    udp_t               udp;
 }
 
 
@@ -213,16 +209,16 @@ parser MyParser(packet_in packet,
     }
 
     state parse_tcp {
-        packet.extract(hdr.L4_header.tcp);
-        meta.verify_tcp = hdr.L4_header.tcp.isValid();
+        packet.extract(hdr.tcp);
+        meta.verify_tcp = hdr.tcp.isValid();
         meta.is_tcp = true;
         transition myaccept;
     }
 
     state parse_udp {
-        packet.extract(hdr.L4_header.udp);
+        packet.extract(hdr.udp);
         meta.is_tcp = false;
-        meta.verify_udp = hdr.L4_header.udp.isValid() && hdr.L4_header.udp.checksum != 0;
+        meta.verify_udp = hdr.udp.isValid() && hdr.udp.checksum != 0;
         transition myaccept;
     }
 
@@ -312,10 +308,10 @@ control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
             hdr.ipv4.protocol,
             meta.L4_length,
 
-            hdr.L4_header.tcp.src_port,
-            hdr.L4_header.tcp.dst_port,
-            hdr.L4_header.tcp.unused1,
-            hdr.L4_header.tcp.unused2}, 
+            hdr.tcp.src_port,
+            hdr.tcp.dst_port,
+            hdr.tcp.unused1,
+            hdr.tcp.unused2}, 
             32w1<<16);
             meta.L4_checksum_partial = checksum;
         }
@@ -328,9 +324,9 @@ control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
             hdr.ipv4.protocol,
             meta.L4_length,
 
-            hdr.L4_header.udp.src_port,
-            hdr.L4_header.udp.dst_port,
-            hdr.L4_header.udp.unused}, 
+            hdr.udp.src_port,
+            hdr.udp.dst_port,
+            hdr.udp.unused}, 
             32w1<<16);
             meta.L4_checksum_partial = checksum;
         }
@@ -528,12 +524,12 @@ control MyIngress(inout headers hdr,
 
     action get_id() {
         if(meta.is_tcp) {
-            meta.id.src_port = hdr.L4_header.tcp.src_port;
-            meta.id.dst_port = hdr.L4_header.tcp.dst_port;
+            meta.id.src_port = hdr.tcp.src_port;
+            meta.id.dst_port = hdr.tcp.dst_port;
         }
         else {
-            meta.id.src_port = hdr.L4_header.udp.src_port;
-            meta.id.dst_port = hdr.L4_header.udp.dst_port;
+            meta.id.src_port = hdr.udp.src_port;
+            meta.id.dst_port = hdr.udp.dst_port;
         }
         meta.id.src_addr = hdr.ipv4.src_addr;
         meta.id.dst_addr = hdr.ipv4.dst_addr;
@@ -564,17 +560,17 @@ control MyIngress(inout headers hdr,
     action translate() {
         hdr.ipv4.src_addr = NAT_ADDR;
         if(meta.is_tcp) 
-            hdr.L4_header.tcp.src_port = meta.entry.map.eport;
+            hdr.tcp.src_port = meta.entry.map.eport;
         else
-            hdr.L4_header.udp.src_port = meta.entry.map.eport;
+            hdr.udp.src_port = meta.entry.map.eport;
     }
     
     action reverse_translate() {
         hdr.ipv4.dst_addr = meta.entry.map.id.src_addr;
         if(meta.is_tcp)
-            hdr.L4_header.tcp.dst_port = meta.entry.map.id.src_port;
+            hdr.tcp.dst_port = meta.entry.map.id.src_port;
         else
-            hdr.L4_header.udp.dst_port = meta.entry.map.id.src_port;
+            hdr.udp.dst_port = meta.entry.map.id.src_port;
     }
 
     action set_metadata(bool send_update) {
@@ -637,8 +633,8 @@ control MyIngress(inout headers hdr,
         }
         
         if(!meta.is_from_nfv && hdr.metadata.is_to_in == 1) {
-            port_t eport = meta.is_tcp? hdr.L4_header.tcp.dst_port : hdr.L4_header.udp.dst_port;
-            port_t src_port = meta.is_tcp? hdr.L4_header.tcp.src_port : hdr.L4_header.udp.src_port;
+            port_t eport = meta.is_tcp? hdr.tcp.dst_port : hdr.udp.dst_port;
+            port_t src_port = meta.is_tcp? hdr.tcp.src_port : hdr.udp.src_port;
             ip4_addr_t src_addr = hdr.ipv4.src_addr;
             bit<8> protocol = hdr.ipv4.protocol;
 
@@ -839,16 +835,16 @@ control MyComputeChecksum(inout headers hdr, inout metadata meta) {
             hdr.ipv4.protocol,
             meta.L4_length,
 
-            hdr.L4_header.tcp.src_port,
-            hdr.L4_header.tcp.dst_port,
-            hdr.L4_header.tcp.unused1,
-            hdr.L4_header.tcp.unused2}, 
+            hdr.tcp.src_port,
+            hdr.tcp.dst_port,
+            hdr.tcp.unused1,
+            hdr.tcp.unused2}, 
             32w1<<16);
-            checksum = (bit<32>)hdr.L4_header.tcp.checksum + (checksum + (bit<32>)(0xffff^meta.L4_checksum_partial));
+            checksum = (bit<32>)hdr.tcp.checksum + (checksum + (bit<32>)(0xffff^meta.L4_checksum_partial));
             checksum = (checksum & 0xffff) + (checksum >> 16);
             checksum = (checksum & 0xffff) + (checksum >> 16);
             if(checksum == 0) checksum = 0xffff;
-            hdr.L4_header.tcp.checksum = (bit<16>)checksum;
+            hdr.tcp.checksum = (bit<16>)checksum;
         }
         
         if(meta.update_udp) {
@@ -859,15 +855,15 @@ control MyComputeChecksum(inout headers hdr, inout metadata meta) {
             hdr.ipv4.protocol,
             meta.L4_length,
 
-            hdr.L4_header.udp.src_port,
-            hdr.L4_header.udp.dst_port,
-            hdr.L4_header.udp.unused}, 
+            hdr.udp.src_port,
+            hdr.udp.dst_port,
+            hdr.udp.unused}, 
             32w1<<16);
-            checksum = (bit<32>)hdr.L4_header.udp.checksum + (checksum + (bit<32>)(0xffff^meta.L4_checksum_partial));
+            checksum = (bit<32>)hdr.udp.checksum + (checksum + (bit<32>)(0xffff^meta.L4_checksum_partial));
             checksum = (checksum & 0xffff) + (checksum >> 16);
             checksum = (checksum & 0xffff) + (checksum >> 16);
             if(checksum == 0) checksum = 0xffff;
-            hdr.L4_header.udp.checksum = (bit<16>)checksum;
+            hdr.udp.checksum = (bit<16>)checksum;
         }
         /*
         update_checksum(meta.update_metadata, 
@@ -960,8 +956,8 @@ control MyEgress(inout headers hdr,
     apply{
         meta.update_metadata = hdr.metadata.isValid();
         meta.update_ip = hdr.ipv4.isValid();
-        meta.update_tcp = hdr.L4_header.tcp.isValid();
-        meta.update_udp = hdr.L4_header.udp.isValid() && (hdr.L4_header.udp.checksum != 0);
+        meta.update_tcp = hdr.tcp.isValid();
+        meta.update_udp = hdr.udp.isValid() && (hdr.udp.checksum != 0);
         if(standard_metadata.egress_port != NFV_PORT) {
             hdr.metadata.setInvalid();
             hdr.ethernet.ether_type = TYPE_IPV4;
@@ -990,7 +986,8 @@ control MyDeparser(packet_out packet, in headers hdr) {
         packet.emit(hdr.ethernet);
         packet.emit(hdr.metadata);
         packet.emit(hdr.ipv4);
-        packet.emit(hdr.L4_header);
+        packet.emit(hdr.tcp);
+        packet.emit(hdr.udp);
     }
 }
 

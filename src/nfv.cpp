@@ -681,7 +681,7 @@ void do_aging(mytime_t timestamp)
     last_timestamp = timestamp;    
 
 
-    putchar('\n');
+    debug_printf("\n");
     list_entry_t *entry = list_front(inuse_port_leader);
     int cnt = 0;
     while(entry != inuse_port_leader) {
