@@ -92,38 +92,6 @@ header udp_t{
     bit<16> checksum;
 }
 
-struct metadata {
-    bool parse_error;
-    bool checksum_error;
-    bool control_ignore;
-    bool is_from_nfv;
-
-    ipv4_flow_id_t  id;
-
-    index_t         index;
-    vector_entry_t  entry;
-
-    time_t          time;
-    bool            primary_timeout;
-    bool            secondary_timeout;
-    bool            match;
-
-    bool            verify_metadata;
-    bool            verify_ip;
-    bool            verify_tcp;
-    bool            verify_udp;
-
-    bool            is_tcp;
-
-    bool            update_metadata;
-    bool            update_ip;
-    bool            update_tcp;
-    bool            update_udp;
-
-    bit<16>         L4_length;
-    bit<16>         L4_checksum_partial;
-}
-
 header nat_metadata_t {//36
     ip4_addr_t  primary_map_src_addr;
     ip4_addr_t  primary_map_dst_addr;
@@ -161,6 +129,43 @@ struct headers {
     udp_t               udp;
 }
 
+struct metadata {
+    /* parser -> ingress */
+    bool            parse_error;
+    bool            verify_metadata;
+    bool            verify_ip;
+    bool            verify_tcp;
+    bool            verify_udp;
+    bool            is_tcp;
+    bit<16>         L4_length;
+
+    /* checksum -> ingress */
+    bool            checksum_error;
+
+    /* ingress */
+    bool            control_ignore;
+    bool            is_from_nfv;
+
+
+    ipv4_flow_id_t  id;
+
+    index_t         index;
+    vector_entry_t  entry;
+
+    time_t          time;
+    bool            primary_timeout;
+    bool            secondary_timeout;
+    bool            match;
+    
+    /* ingress -> deparser */
+    bool            update_metadata;
+    bool            update_ip;
+    bool            update_tcp;
+    bool            update_udp;
+
+    /* ingress checksum -> egress checksum */
+    bit<16>         L4_checksum_partial;
+}
 
 
 /*************************************************************************
@@ -181,54 +186,42 @@ parser MyParser(packet_in packet,
         transition select(hdr.ethernet.ether_type) {
             TYPE_IPV4: parse_ipv4;
             TYPE_METADATA: parse_metadata;
-            default: myreject;
         }
     }
 
     state parse_metadata {
         packet.extract(hdr.metadata);
-        meta.verify_metadata = hdr.metadata.isValid();
         transition select(hdr.metadata.is_update) {
             1w0: parse_ipv4;
-            1w1: myaccept;
+            1w1: accept;
         }
     }
 
     state parse_ipv4 {
         packet.extract(hdr.ipv4);
-        meta.verify_ip = hdr.ipv4.isValid();
-        meta.L4_length = hdr.ipv4.total_length - (bit<16>)hdr.ipv4.ihl * 4;
+
+        //meta.L4_length = hdr.ipv4.total_length - (bit<16>)hdr.ipv4.ihl * 4;
+        
         //verify(hdr.ipv4.version == 4, error.NoMatch);
         //verify(hdr.ipv4.ihl == 5, error.NoMatch);// drop all packet with ihl > 5
         bit chk = (bit)(hdr.ipv4.version == 4 && hdr.ipv4.ihl == 5);
         transition select(hdr.ipv4.protocol ++ chk) {
             TCP_PROTOCOL ++ 1w1: parse_tcp;
             UDP_PROTOCOL ++ 1w1: parse_udp;
-            default: myreject;
         }
     }
 
     state parse_tcp {
         packet.extract(hdr.tcp);
-        meta.verify_tcp = hdr.tcp.isValid();
-        meta.is_tcp = true;
-        transition myaccept;
+        //meta.verify_tcp = hdr.tcp.isValid();
+        //meta.is_tcp = true;
+        transition accept;
     }
 
     state parse_udp {
         packet.extract(hdr.udp);
-        meta.is_tcp = false;
-        meta.verify_udp = hdr.udp.isValid() && hdr.udp.checksum != 0;
-        transition myaccept;
-    }
-
-    state myreject {
-        meta.parse_error = true;
-        transition accept;
-    }
-
-    state myaccept {
-        meta.parse_error = false;
+        //meta.is_tcp = false;
+        //meta.verify_udp = hdr.udp.isValid() && hdr.udp.checksum != 0;
         transition accept;
     }
 }
@@ -243,6 +236,18 @@ control UnusedVerifyChecksum(inout headers hdr, inout metadata meta) {
     }
 }
 
+control MyMetadataInit(inout headers hdr, inout metadata meta) {
+    apply {
+        meta.parse_error = (!hdr.metadata.isValid() && !hdr.ipv4.isValid()) || 
+            (hdr.ipv4.isValid() && !hdr.tcp.isValid() && !hdr.udp.isValid());
+        meta.verify_metadata = hdr.metadata.isValid();
+        meta.verify_ip = hdr.ipv4.isValid();
+        meta.verify_tcp = hdr.tcp.isValid();
+        meta.verify_udp = hdr.udp.isValid() && hdr.udp.checksum != 0;
+        meta.is_tcp = hdr.tcp.isValid();
+        if(hdr.ipv4.isValid()) meta.L4_length = hdr.ipv4.total_length - (bit<16>)hdr.ipv4.ihl * 4;
+    }
+}
 
 control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
     apply {
@@ -613,9 +618,16 @@ control MyIngress(inout headers hdr,
     }
 
     apply {
+        MyMetadataInit.apply(hdr, meta);
+
+        if(meta.parse_error) {
+            drop();
+            return;
+        }
+
         MyVerifyChecksum.apply(hdr, meta);
 
-        if(meta.parse_error || meta.checksum_error || standard_metadata.checksum_error != 0) {
+        if(meta.checksum_error) {
             drop();
             return;
         }
