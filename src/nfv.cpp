@@ -59,15 +59,14 @@ struct map_entry_t{
 }__attribute__ ((__packed__));
 
 struct nat_metadata_t{
-    map_entry_t primary_map; 
-    map_entry_t secondary_map;
-    u16 zero1     : 5;
+    flow_id_t id;
+    port_t switch_port;
+    u16 zero     : 5;
     u16 is_update : 1;
     u16 is_to_out : 1;
     u16 is_to_in  : 1;
-    u16 zero2     : 8;
+    u16 version   : 8;
     port_t index;
-    mytime_t sw_time_net;
     mytime_t nfv_time_net;
     checksum_t checksum;
 }__attribute__ ((__packed__));
@@ -130,8 +129,8 @@ struct Hash{
 };
 
 struct wait_entry_t{
-    map_entry_t primary_map, secondary_map;
-    mytime_t sw_time_net;
+    map_entry_t map;
+    ;
     mytime_t first_req_time_host, last_req_time_host;// this is in host order
     wait_entry_t *l, *r;
     bool is_waiting;

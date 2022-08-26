@@ -1,6 +1,7 @@
 /* -*- P4_16 -*- */
 #include <core.p4>
 #include <v1model.p4>
+#include <tofino.p4>
 #include "shared_metadata.h"
 
 typedef bit<9>  egress_spec_t;
@@ -9,6 +10,7 @@ typedef bit<32> ip4_addr_t;
 typedef bit<16> port_t;
 typedef bit<16> index_t;
 typedef bit<32> time_t;
+typedef bit<8> version_t;
 
 const bit<9>  NFV_PORT = 2;
 
@@ -34,6 +36,8 @@ const time_t AGING_TIME_US = SHARED_AGING_TIME_US;// 1 s
 const mac_addr_t SWITCH_INNER_MAC = SHARED_SWITCH_INNER_MAC;
 const mac_addr_t NFV_INNER_MAC = SHARED_NFV_INNER_MAC;
 
+const time_t FOREVER_TIMEOUT = 32w0xC0000000;
+
 /*************************************************************************
 *********************** H E A D E R S  ***********************************
 *************************************************************************/
@@ -42,6 +46,28 @@ header ethernet_t {
     mac_addr_t dst_addr;
     mac_addr_t src_addr;
     bit<16>   ether_type;
+}
+
+header nat_metadata_t {//36
+    ip4_addr_t  src_addr;
+    ip4_addr_t  dst_addr;
+    port_t      src_port;
+    port_t      dst_port;
+    bit<8>      protocol;
+    bit<8>      zero;
+
+    port_t      switch_eport;
+
+    bit         is_to_in;//最终会去往in
+    bit         is_to_out;
+    bit         is_update;
+    bit<5>      zero;
+
+    version_t   version;
+
+    index_t     index; // index is the hash value of flow id
+    time_t      nfv_time;// 因为一个ACK返回的时候wait_entry可能已经没了，所以时间需要记录在packet里
+    bit<16>     checksum;
 }
 
 header ipv4_t {
@@ -66,17 +92,6 @@ struct ipv4_flow_id_t { // size == 14
     bit<8>      zero;// zero == 0x00, for alignment in C
 }
 
-struct map_entry_t {// size == 16
-    ipv4_flow_id_t  id;
-    port_t          eport;
-}
-
-struct vector_entry_t {// size == 24
-    map_entry_t map;
-    time_t      primary_time;
-    time_t      secondary_time;
-}
-
 header tcp_t{
     port_t src_port;
     port_t dst_port;
@@ -92,41 +107,17 @@ header udp_t{
     bit<16> checksum;
 }
 
-header nat_metadata_t {//36
-    ip4_addr_t  primary_map_src_addr;
-    ip4_addr_t  primary_map_dst_addr;
-    port_t      primary_map_src_port;
-    port_t      primary_map_dst_port;
-    bit<8>      primary_map_protocol;
-    bit<8>      primary_map_zero;
-    port_t      primary_map_eport;
-
-    ip4_addr_t  secondary_map_src_addr;
-    ip4_addr_t  secondary_map_dst_addr;
-    port_t      secondary_map_src_port;
-    port_t      secondary_map_dst_port;
-    bit<8>      secondary_map_protocol;
-    bit<8>      secondary_map_zero;
-    port_t      secondary_map_eport;
-
-    bit         is_to_in;//最终会去往in
-    bit         is_to_out;
-    bit         is_update;
-
-    bit<13>     zero;
-
-    index_t index; // index is the hash value of flow id
-    time_t sw_time;
-    time_t nfv_time;// 因为一个ACK返回的时候wait_entry可能已经没了，所以时间需要记录在packet里
-    bit<16> checksum;
-}
-
 struct headers {
     ethernet_t          ethernet;
     nat_metadata_t      metadata;
     ipv4_t              ipv4;
     tcp_t               tcp;
     udp_t               udp;
+}
+
+struct map_entry_t {// size == 16
+    ipv4_flow_id_t  id;
+    port_t          eport;
 }
 
 struct metadata {
@@ -138,6 +129,7 @@ struct metadata {
     bool            verify_udp;
     bool            is_tcp;
     bit<16>         L4_length;
+    bit<4>         valid_bits;
 
     /* checksum -> ingress */
     bool            checksum_error;
@@ -146,16 +138,16 @@ struct metadata {
     bool            control_ignore;
     bool            is_from_nfv;
 
-
+    // packet info
     ipv4_flow_id_t  id;
-
     index_t         index;
-    vector_entry_t  entry;
-
     time_t          time;
-    bool            primary_timeout;
-    bool            secondary_timeout;
+    // register
+    map_entry_t     reg_map;
+
+    bool            timeout;
     bool            match;
+    version_t       version_diff;
     
     /* ingress -> deparser */
     bool            update_metadata;
@@ -199,11 +191,6 @@ parser MyParser(packet_in packet,
 
     state parse_ipv4 {
         packet.extract(hdr.ipv4);
-
-        //meta.L4_length = hdr.ipv4.total_length - (bit<16>)hdr.ipv4.ihl * 4;
-        
-        //verify(hdr.ipv4.version == 4, error.NoMatch);
-        //verify(hdr.ipv4.ihl == 5, error.NoMatch);// drop all packet with ihl > 5
         bit chk = (bit)(hdr.ipv4.version == 4 && hdr.ipv4.ihl == 5);
         transition select(hdr.ipv4.protocol ++ chk) {
             TCP_PROTOCOL ++ 1w1: parse_tcp;
@@ -213,15 +200,11 @@ parser MyParser(packet_in packet,
 
     state parse_tcp {
         packet.extract(hdr.tcp);
-        //meta.verify_tcp = hdr.tcp.isValid();
-        //meta.is_tcp = true;
         transition accept;
     }
 
     state parse_udp {
         packet.extract(hdr.udp);
-        //meta.is_tcp = false;
-        //meta.verify_udp = hdr.udp.isValid() && hdr.udp.checksum != 0;
         transition accept;
     }
 }
@@ -238,8 +221,14 @@ control UnusedVerifyChecksum(inout headers hdr, inout metadata meta) {
 
 control MyMetadataInit(inout headers hdr, inout metadata meta) {
     apply {
-        meta.parse_error = (!hdr.metadata.isValid() && !hdr.ipv4.isValid()) || 
-            (hdr.ipv4.isValid() && !hdr.tcp.isValid() && !hdr.udp.isValid());
+        meta.valid_bits =   (bit)hdr.ethernet.isValid() ++
+                            (bit)hdr.metadata.isValid() ++
+                            (bit)hdr.ipv4.isValid() ++
+                            (bit)(hdr.tcp.isValid()||hdr.udp.isValid());
+
+        meta.parse_error = meta.valid_bits != 4w0b1100 &&
+                           meta.valid_bits != 4w0b1111 &&
+                           meta.valid_bits != 4w0b1011;
         meta.verify_metadata = hdr.metadata.isValid();
         meta.verify_ip = hdr.ipv4.isValid();
         meta.verify_tcp = hdr.tcp.isValid();
@@ -335,74 +324,6 @@ control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
             32w1<<16);
             meta.L4_checksum_partial = checksum;
         }
-        
-        /*
-        verify_checksum(meta.verify_metadata, 
-            {hdr.metadata.primary_map.id.src_addr, 
-            hdr.metadata.primary_map.id.dst_addr, 
-            hdr.metadata.primary_map.id.src_port, 
-            hdr.metadata.primary_map.id.dst_port, 
-            hdr.metadata.primary_map.id.protocol,
-            hdr.metadata.primary_map.id.zero,
-            hdr.metadata.primary_map.eport,
-
-            hdr.metadata.secondary_map.id.src_addr, 
-            hdr.metadata.secondary_map.id.dst_addr, 
-            hdr.metadata.secondary_map.id.src_port, 
-            hdr.metadata.secondary_map.id.dst_port, 
-            hdr.metadata.secondary_map.id.protocol,
-            hdr.metadata.secondary_map.id.zero,
-            hdr.metadata.secondary_map.eport,
-
-            hdr.metadata.is_to_in,
-            hdr.metadata.is_to_out,
-            hdr.metadata.is_update,
-            hdr.metadata.zero,
-
-            hdr.metadata.index,
-            
-            hdr.metadata.sw_time,
-            hdr.metadata.nfv_time
-            },
-            hdr.metadata.checksum, HashAlgorithm.csum16);
-
-        verify_checksum(meta.verify_ip, 
-            {hdr.ipv4.version,
-            hdr.ipv4.ihl,
-            hdr.ipv4.unused1,
-            hdr.ipv4.total_length,
-            hdr.ipv4.unused2,
-            hdr.ipv4.ttl,
-            hdr.ipv4.protocol,
-            hdr.ipv4.src_addr,
-            hdr.ipv4.dst_addr},
-            hdr.ipv4.checksum, HashAlgorithm.csum16);
-        
-        verify_checksum_with_payload(meta.verify_tcp, 
-            {hdr.ipv4.src_addr, 
-            hdr.ipv4.dst_addr,
-            8w0,
-            hdr.ipv4.protocol,
-            meta.L4_length,
-
-            hdr.L4_header.tcp.src_port,
-            hdr.L4_header.tcp.dst_port,
-            hdr.L4_header.tcp.unused1,
-            hdr.L4_header.tcp.unused2}, 
-            hdr.L4_header.tcp.checksum, HashAlgorithm.csum16);
-
-        verify_checksum_with_payload(meta.verify_udp, 
-            {hdr.ipv4.src_addr, 
-            hdr.ipv4.dst_addr,
-            8w0,
-            hdr.ipv4.protocol,
-            meta.L4_length,
-
-            hdr.L4_header.udp.src_port,
-            hdr.L4_header.udp.dst_port,
-            hdr.L4_header.udp.unused}, 
-            hdr.L4_header.udp.checksum, HashAlgorithm.csum16);
-        */
     }
 }
 
@@ -438,48 +359,130 @@ control MyIngress(inout headers hdr,
         default_action = drop();
     }
 
-    // type只能是bit<n>，并且据说宽度>64不行，p4和simple_switch支持，但thrift不支持。
-    register<bit<32> >((bit<32>)SWITCH_PORT_NUM) map5; // id -> index -> eport
-    register<bit<32> >((bit<32>)SWITCH_PORT_NUM) map4;
-    register<bit<32> >((bit<32>)SWITCH_PORT_NUM) map3;
-    register<bit<32> >((bit<32>)SWITCH_PORT_NUM) map2;
-    register<bit<32> >((bit<32>)SWITCH_PORT_NUM) map1;
-    register<bit<32> >((bit<32>)SWITCH_PORT_NUM) map0;
-    //拆成6个，是因为simple_switch_CLI只支持显示到2^63-1
+    Register<map_entry_t, bit<32>>((bit<32>)SWITCH_PORT_NUM, 0) map;
+    // TODO：time后续可以改成8bit
+    Register<time_t, bit<32>>((bit<32>)SWITCH_PORT_NUM, FOREVER_TIMEOUT) primary_time;
+    Register<version_t, bit<32>>((bit<32>)SWITCH_PORT_NUM, 0) version;
+    Register<index_t, bit<32>>(PORT_MAX - (bit<32>)PORT_MIN, 0) reverse_map;
 
-    register<bit<16> >(PORT_MAX - (bit<32>)PORT_MIN) reverse_map; // eport -> index
+    RegisterAction<map_entry_t, bit<32>, map_entry_t>(map) reg_map_read = {
+        void apply(inout map_entry_t reg_map) {
+            meta.reg_map = reg_map;
+        }
+    };
 
-    action map_read(out vector_entry_t entry, in index_t index) {
-        bit<32> tmp5 = 0;
-        bit<32> tmp4 = 0;
-        bit<32> tmp3 = 0;
-        bit<32> tmp2 = 0;
-        bit<32> tmp1 = 0;
-        bit<32> tmp0 = 0;
-        map5.read(tmp5, (bit<32>)index);
-        map4.read(tmp4, (bit<32>)index);
-        map3.read(tmp3, (bit<32>)index);
-        map2.read(tmp2, (bit<32>)index);
-        map1.read(tmp1, (bit<32>)index);
-        map0.read(tmp0, (bit<32>)index);
-        entry = {{{tmp5[31:0], tmp4[31:0], tmp3[31:16], tmp3[15:0], tmp2[31:24], tmp2[23:16]}, tmp2[15:0]}, tmp1[31:0], tmp0[31:0]};
+    RegisterAction<map_entry_t, bit<32>, map_entry_t>(map) reg_map_swap = {
+        void apply(inout map_entry_t reg_map) {
+            map_entry_t tmp = meta.reg_map;
+            meta.reg_map = reg_map;
+            reg_map = tmp;
+        }
+    };
+
+    RegisterAction<time_t, bit<32>, time_t>(primary_time) reg_update_time_on_match = {
+        void apply(inout time_t reg_time) {
+            // "meta.time - FOREVER_TIMEOUT > AGING_TIME_US" is always true
+            if(meta.time - reg_time > AGING_TIME_US) {
+                reg_time = FOREVER_TIMEOUT;
+                meta.timeout = true;
+            }
+            else {
+                reg_time = meta.time;
+                meta.timeout = false;
+            }
+        }
+    };
+
+    RegisterAction<time_t, bit<32>, time_t>(primary_time) reg_update_time_on_mismatch = {
+        void apply(inout time_t reg_time) {
+            if(meta.time - reg_time > AGING_TIME_US) {
+                reg_time = FOREVER_TIMEOUT;
+                meta.timeout = true;
+            }
+            else {
+                meta.timeout = false;
+            }
+        }
+    };
+
+    RegisterAction<time_t, bit<32>, time_t>(primary_time) reg_write_time = {
+        void apply(inout time_t reg_time) {
+            reg_time = meta.time;
+        }
+    };
+
+    RegisterAction<version_t, bit<32>, version_t>(version) reg_read_version = {
+        void apply(inout version_t reg_version) {
+            meta.version = reg_version;
+        }
+    };
+
+    RegisterAction<version_t, bit<32>, version_t>(version) reg_update_version = {
+        void apply(inout version_t reg_version) {
+            version_t version_diff = meta.version - reg_version;
+            meta.version_diff = version_diff;
+            if(version_diff == 1) {
+                reg_version = meta.version;
+            }
+        }
+    };
+
+    RegisterAction<index_t, bit<32>, index_t>(reverse_map) reg_reverse_map_read = {
+        void apply(inout index_t reg_index) {
+            meta.index = reg_index;
+        }
+    };
+
+    RegisterAction<index_t, bit<32>, index_t>(reverse_map) reg_reverse_map_write = {
+        void apply(inout index_t reg_index) {
+            reg_index = meta.index;
+        }
+    };
+
+    RegisterAction<index_t, bit<32>, index_t>(reverse_map) reg_reverse_map_clear = {
+        void apply(inout index_t reg_index) {
+            reg_index = 0;
+        }
+    };
+
+    action map_read(index_t index) {
+        reg_map_read.execute((bit<32>)index);
     }
 
-    action map_write(in index_t index, in vector_entry_t entry) {
-        map_entry_t map_entry = entry.map;
-        ipv4_flow_id_t id = map_entry.id;
-        bit<32> tmp5 = id.src_addr;
-        bit<32> tmp4 = id.dst_addr; 
-        bit<32> tmp3 = id.src_port ++ id.dst_port;
-        bit<32> tmp2 = id.protocol ++ id.zero ++ map_entry.eport;
-        bit<32> tmp1 = entry.primary_time;
-        bit<32> tmp0 = entry.secondary_time;
-        map5.write((bit<32>)index, tmp5);
-        map4.write((bit<32>)index, tmp4);
-        map3.write((bit<32>)index, tmp3);
-        map2.write((bit<32>)index, tmp2);
-        map1.write((bit<32>)index, tmp1);
-        map0.write((bit<32>)index, tmp0);
+    action map_swap(index_t index) {
+        reg_map_swap.execute((bit<32>)index);
+    }
+
+    action update_time_on_match(index_t index) {
+        reg_update_time_on_match.execute((bit<32>)index);
+    }
+
+    action update_time_on_mismatch(index_t index) {
+        reg_update_time_on_mismatch.execute((bit<32>)index);
+    }
+
+    action write_time(index_t index) {
+        reg_write_time.execute((bit<32>)index);
+    }
+
+    action read_version(index_t index) {
+        reg_read_version.execute((bit<32>)index);
+    }
+
+    action update_version(index_t index) {
+        reg_update_version.execute((bit<32>)index);
+    }
+
+    action reverse_map_read(index_t index) {
+        reg_reverse_map_read.execute((bit<32>)index);
+    }
+
+    action reverse_map_write(index_t index) {
+        reg_reverse_map_write.execute((bit<32>)index);
+    }
+
+    action reverse_map_clear(index_t index) {
+        reg_reverse_map_clear.execute((bit<32>)index);
     }
 
     action get_transition_type() {
@@ -487,8 +490,12 @@ control MyIngress(inout headers hdr,
         meta.control_ignore = false;
 
         if(standard_metadata.ingress_port == NFV_PORT) {
-
             meta.is_from_nfv = true;
+
+            if(meta.valid_bits != 4w0b1100 && meta.valid_bits != 4w0b1111) {
+                meta.control_ignore = true;
+                return;
+            }
 
             if(hdr.ethernet.src_addr != NFV_INNER_MAC || 
                 hdr.ethernet.dst_addr != SWITCH_INNER_MAC ||
@@ -506,8 +513,17 @@ control MyIngress(inout headers hdr,
                 meta.control_ignore = true;
                 return;
             } 
+            bit<5> bits = meta.valid_bits ++ hdr.metadata.is_update;
+            if(bits != 5w0b1100_1 && bits != 5w0b1111_0) {
+                meta.control_ignore = true;
+                return;
+            }
         }
         else {
+            if(meta.valid_bits != 4w0b1011) {
+                meta.control_ignore = true;
+                return;
+            }
             meta.is_from_nfv = false;
 
             if(LAN_ADDR_START <= hdr.ipv4.src_addr && hdr.ipv4.src_addr < LAN_ADDR_END
@@ -551,9 +567,9 @@ control MyIngress(inout headers hdr,
     }
 
     action get_time() {
-        meta.time = (bit<32>)standard_metadata.ingress_global_timestamp;//truncate 48->32
+        meta.time = (bit<31>)standard_metadata.ingress_global_timestamp;//truncate 48->31
     }    
-
+    /*
     action read_entry() {
         map_read(meta.entry, meta.index);
 
@@ -561,7 +577,7 @@ control MyIngress(inout headers hdr,
         meta.secondary_timeout = meta.time - meta.entry.secondary_time > AGING_TIME_US;
         meta.match = meta.entry.map.id == meta.id;
     }
-
+    */
     action translate() {
         hdr.ipv4.src_addr = NAT_ADDR;
         if(meta.is_tcp) 
@@ -582,31 +598,24 @@ control MyIngress(inout headers hdr,
         hdr.ethernet.ether_type = TYPE_METADATA;
 
         // Why p4c for tofino does not support "struct in header" ???
-        hdr.metadata.primary_map_src_addr = meta.entry.map.id.src_addr;
-        hdr.metadata.primary_map_dst_addr = meta.entry.map.id.dst_addr;
-        hdr.metadata.primary_map_src_port = meta.entry.map.id.src_port;
-        hdr.metadata.primary_map_dst_port = meta.entry.map.id.dst_port;
-        hdr.metadata.primary_map_protocol = meta.entry.map.id.protocol;
-        hdr.metadata.primary_map_zero = meta.entry.map.id.zero;
-        hdr.metadata.primary_map_eport = meta.entry.map.eport;
+        hdr.metadata.src_addr = meta.id.src_addr;
+        hdr.metadata.dst_addr = meta.id.dst_addr;
+        hdr.metadata.src_port = meta.id.src_port;
+        hdr.metadata.dst_port = meta.id.dst_port;
+        hdr.metadata.protocol = meta.id.protocol;
+        hdr.metadata.zero = 0;
 
-        hdr.metadata.secondary_map_src_addr = meta.id.src_addr;
-        hdr.metadata.secondary_map_dst_addr = meta.id.dst_addr;
-        hdr.metadata.secondary_map_src_port = meta.id.src_port;
-        hdr.metadata.secondary_map_dst_port = meta.id.dst_port;
-        hdr.metadata.secondary_map_protocol = meta.id.protocol;
-        hdr.metadata.secondary_map_zero = meta.id.zero;
-        hdr.metadata.secondary_map_eport = 0;
+        hdr.metadata.switch_eport = meta.reg_map.eport;
         
         //hdr.metadata.primary_map = meta.entry.map;
         //hdr.metadata.secondary_map = {meta.id, 0};
         
         //hdr.metadata.is_to_in
         //hdr.metadata.is_to_out
-        hdr.metadata.is_update = send_update ? (bit)meta.primary_timeout : 1w0;
+        hdr.metadata.is_update = send_update ? (bit)meta.timeout : 1w0;
         hdr.metadata.zero = 0;
+        hdr.metadata.version = meta.version;
         hdr.metadata.index = meta.index;
-        hdr.metadata.sw_time = meta.time;
         hdr.metadata.nfv_time = 0;
         hdr.metadata.checksum = 0;
     }
@@ -656,7 +665,7 @@ control MyIngress(inout headers hdr,
                 return;
             }
 
-            reverse_map.read(meta.index, (bit<32>)(eport - PORT_MIN));
+            reverse_map_read(eport - PORT_MIN);// -> meta.index
 
             if(meta.index == 0) { // not in switch
                 set_metadata(false);
@@ -666,23 +675,28 @@ control MyIngress(inout headers hdr,
 
             //assert(meta.index < SWITCH_PORT_NUM); //
 
-            map_read(meta.entry, meta.index);
+            map_read(meta.index);
 
-            if(meta.entry.map.eport != eport) {//这个if是冗余的,因为不用的reverse_map会置零
+            if(meta.map.eport != eport) {//这个if是冗余的,因为不用的reverse_map会置零
                 set_metadata(false);
                 send_to_NFV();
                 return;
             }
 
-            ipv4_flow_id_t map_id = meta.entry.map.id;
+            ipv4_flow_id_t map_id = meta.map.id;
 
-            if({map_id.dst_addr, map_id.dst_port, map_id.protocol} != {src_addr, src_port, protocol}
-                || meta.time - meta.entry.primary_time > AGING_TIME_US) {// mismatch or aging
+            if({map_id.dst_addr, map_id.dst_port, map_id.protocol} != {src_addr, src_port, protocol}) {
+                // mismatch
                 drop();
                 return;
             }
-            meta.entry.primary_time = meta.time;
-            map_write(meta.index, meta.entry);
+            
+            update_time_on_match(meta.index);
+            if(meta.timeout) {
+                // aging
+                drop();
+                return;
+            }
 
             reverse_translate();
             ip2port_dmac.apply();
@@ -691,8 +705,8 @@ control MyIngress(inout headers hdr,
             get_id();
             get_index();
 
-            read_entry();
-            
+            //read_entry();
+            /*
             if(meta.entry.map.eport == 0 || (meta.primary_timeout && meta.secondary_timeout)) {
                 meta.entry.map.id = meta.id;
                 meta.entry.primary_time = meta.time;
@@ -719,7 +733,23 @@ control MyIngress(inout headers hdr,
 
                 set_metadata(true);
                 send_to_NFV();
-            } 
+            } */
+            map_read(meta.index);
+            meta.match = meta.reg_map.id == meta.id;
+            if(meta.match) {
+                update_time_on_match(meta.index);
+                if(!meta.timeout) {
+                    translate();
+                    ip2port_dmac.apply();
+                    return;
+                }
+            }
+            else {
+                update_time_on_mismatch(meta.index);
+            }
+            read_version(meta.index);
+            set_metadata(true);
+            send_to_NFV();
         }
         else if(meta.is_from_nfv && hdr.metadata.is_to_in == 1) {
             ip2port_dmac.apply();
@@ -729,13 +759,9 @@ control MyIngress(inout headers hdr,
         }
         else if(meta.is_from_nfv && hdr.metadata.is_update == 1) {
             meta.index = hdr.metadata.index;
-
-            if( meta.time - hdr.metadata.sw_time > AGING_TIME_US / 2 || 
-                meta.index >= SWITCH_PORT_NUM) {
-                drop();
-                return;
-            }
-
+            meta.version = hdr.metadata.version;
+            update_version(meta.index);
+            /*
             map_read(meta.entry, meta.index);
 
             bool primary_map_match = 
@@ -779,7 +805,28 @@ control MyIngress(inout headers hdr,
 
                 map_write(meta.index, meta.entry);
             }
+            */
             //if meta.entry.map == hdr.metadata.secondary_map return a redundent ACK
+            if(meta.version_diff > 1) {
+                drop();
+                return;
+            }
+            if(meta.version_diff == 1) {
+                meta.reg_map = {
+                    {hdr.metadata.src_addr,
+                    hdr.metadata.dst_addr,
+                    hdr.metadata.src_port,
+                    hdr.metadata.dst_port, 
+                    hdr.metadata.protocol,
+                    0},
+                    hdr.metadata.switch_eport
+                };
+                reg_reverse_map_write(meta.reg_map.eport - PORT_MIN);
+                map_swap(meta.index);
+                write_time(meta.index);
+
+                reg_reverse_map_clear(meta.reg_map.eport - PORT_MIN);
+            }
 
             send_to_NFV();
         }
