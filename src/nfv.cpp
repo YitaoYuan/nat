@@ -27,6 +27,7 @@ typedef unsigned int ip_addr_t;
 typedef unsigned int mytime_t;
 typedef unsigned short len_t;
 typedef unsigned short checksum_t;
+typedef unsigned char version_t;
 typedef unsigned char u8;
 typedef unsigned short u16;
 typedef unsigned int u32;
@@ -59,16 +60,16 @@ struct map_entry_t{
 }__attribute__ ((__packed__));
 
 struct nat_metadata_t{
-    flow_id_t id;
-    port_t switch_port;
-    u16 zero     : 5;
-    u16 is_update : 1;
-    u16 is_to_out : 1;
-    u16 is_to_in  : 1;
-    u16 version   : 8;
-    port_t index;
-    mytime_t nfv_time_net;
-    checksum_t checksum;
+    flow_id_t   id;
+    port_t      switch_port;
+    version_t   version;
+    u8          zero      : 5;
+    u8          is_update : 1;
+    u8          is_to_out : 1;
+    u8          is_to_in  : 1;
+    port_t      index;
+    mytime_t    nfv_time_net;
+    checksum_t  checksum;
 }__attribute__ ((__packed__));
 
 struct ip_t{
@@ -113,10 +114,10 @@ enum list_type: u8{
 };
 
 struct list_entry_t{
-    flow_id_t id;
-    port_t index;
-    mytime_t timestamp_host;// this is in host order
-    list_type type;
+    flow_id_t id;// net
+    port_t index_host;// host
+    mytime_t timestamp_host;// host 
+    list_type type;// host
     bool is_waiting;
     list_entry_t *l, *r;
 };
@@ -129,9 +130,10 @@ struct Hash{
 };
 
 struct wait_entry_t{
-    map_entry_t map;
-    ;
-    mytime_t first_req_time_host, last_req_time_host;// this is in host order
+    map_entry_t map;// net
+    version_t version;// net
+    port_t switch_port;// net
+    mytime_t first_req_time_host, last_req_time_host;// host
     wait_entry_t *l, *r;
     bool is_waiting;
 };
@@ -389,7 +391,7 @@ port_t heavy_hitter_get(port_t bucket_index)
     auto &hh = heavy_hitter[bucket_index];
     for(int i = 0; i < hh.size; i++) {
         list_entry_t *entry = port_host_to_entry(hh.entry[i].id);
-        if(entry->type == list_type::inuse && entry->index == bucket_index)
+        if(entry->type == list_type::inuse && entry->index_host == bucket_index)
             return hh.entry[i].id;
         // if this has timeout, it will be locked and will not be moved to list "avail"
     }
@@ -409,18 +411,17 @@ void send_update(port_t index)
     hdr_t *hdr = (hdr_t *)metadata_buf;
     // MAC address is useless between nfv & switch
 
-    hdr->metadata.primary_map = wait_set[index].primary_map;
-    hdr->metadata.secondary_map = wait_set[index].secondary_map;
+    hdr->metadata.id = wait_set[index].map.id;
+    hdr->metadata.switch_port = wait_set[index].map.eport;
+    hdr->metadata.version = wait_set[index].version;
 
-    hdr->metadata.zero1 = 0;
+    hdr->metadata.zero = 0;
     hdr->metadata.is_update = 1;
     hdr->metadata.is_to_out = 0;
     hdr->metadata.is_to_in = 0;
-    hdr->metadata.zero2 = 0;
 
     hdr->metadata.index = htons(index);
 
-    hdr->metadata.sw_time_net = wait_set[index].sw_time_net;
     hdr->metadata.nfv_time_net = htonl(wait_set[index].first_req_time_host);// not necessary to convert
 
     hdr->metadata.checksum = 0;// clear to recalculate
@@ -430,10 +431,12 @@ void send_update(port_t index)
     send_back(hdr, sizeof(hdr->ethernet) + sizeof(hdr->metadata));
 
     debug_printf("\nsend update\n");
-    debug_printf("primary\n");
-    print_map(wait_set[index].primary_map.id, ntohs(wait_set[index].primary_map.eport), index);
-    debug_printf("secondary\n");
-    print_map(wait_set[index].secondary_map.id, ntohs(wait_set[index].secondary_map.eport), index);
+    //debug_printf("primary\n");
+    //print_map(wait_set[index].primary_map.id, ntohs(wait_set[index].primary_map.eport), index);
+    debug_printf("old switch port: %d\n", wait_set[index].switch_port);
+    debug_printf("new map: ");
+    print_map(wait_set[index].map.id, ntohs(wait_set[index].map.eport), index);
+    debug_printf("version %u -> %u\n", wait_set[index].version - 1, wait_set[index].version);
 }
 
 
@@ -444,25 +447,25 @@ void forward_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
     // verify ip
     if(packet_len < sizeof(ethernet_t) + sizeof(nat_metadata_t) + sizeof(ip_t)) return;
     
-    if(hdr->ip.src_addr != hdr->metadata.secondary_map.id.src_addr 
-        || hdr->ip.dst_addr != hdr->metadata.secondary_map.id.dst_addr 
-        || hdr->ip.protocol != hdr->metadata.secondary_map.id.protocol)
+    if(hdr->ip.src_addr != hdr->metadata.id.src_addr 
+        || hdr->ip.dst_addr != hdr->metadata.id.dst_addr 
+        || hdr->ip.protocol != hdr->metadata.id.protocol)
         return;
     // verify tcp/udp
     bool is_tcp;
     if(hdr->ip.protocol == TCP_PROTOCOL) {// 8 bit, OK
         if(packet_len < sizeof(ethernet_t) + sizeof(nat_metadata_t) + sizeof(ip_t) + sizeof(tcp_t))
             return;
-        if(hdr->L4_header.tcp.src_port != hdr->metadata.secondary_map.id.src_port
-            || hdr->L4_header.tcp.dst_port != hdr->metadata.secondary_map.id.dst_port)
+        if(hdr->L4_header.tcp.src_port != hdr->metadata.id.src_port
+            || hdr->L4_header.tcp.dst_port != hdr->metadata.id.dst_port)
             return;
         is_tcp = 1;
     }
     else if(hdr->ip.protocol == UDP_PROTOCOL) {
         if(packet_len < sizeof(ethernet_t) + sizeof(nat_metadata_t) + sizeof(ip_t) + sizeof(udp_t))
             return;
-        if(hdr->L4_header.udp.src_port != hdr->metadata.secondary_map.id.src_port
-            || hdr->L4_header.udp.dst_port != hdr->metadata.secondary_map.id.dst_port)
+        if(hdr->L4_header.udp.src_port != hdr->metadata.id.src_port
+            || hdr->L4_header.udp.dst_port != hdr->metadata.id.dst_port)
             return;
         is_tcp = 0;
     }
@@ -471,18 +474,18 @@ void forward_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
 // allocate flow state for new flow
     nat_metadata_t &metadata = hdr->metadata;
     // things in map are in network byte order
-    auto it = map.find(metadata.secondary_map.id);
+    auto it = map.find(metadata.id);
     if(it == map.end()) {// a new flow
         if(list_empty(avail_port_leader)) return;// no port available, drop
         list_entry_t *entry = list_front(avail_port_leader);
         
-        entry->id = metadata.secondary_map.id;
-        entry->index = ntohs(metadata.index);
+        entry->id = metadata.id;
+        entry->index_host = ntohs(metadata.index);
         entry->type = list_type::inuse;
         entry->is_waiting = 0;
         list_move_to_back(inuse_port_leader, entry);
 
-        it = map.insert(make_pair(metadata.secondary_map.id, entry)).first;
+        it = map.insert(make_pair(metadata.id, entry)).first;
     }
 // refresh flow's timestamp
     list_entry_t *entry = it->second;
@@ -494,7 +497,7 @@ void forward_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
     list_move_to_back(inuse_port_leader, entry);
 
 // heavy hitter detect
-    port_t index = ntohs(metadata.index);
+    port_t index = entry->index_host;
     heavy_hitter_count(index, entry_to_port_host(entry));
 
 // translate
@@ -518,8 +521,8 @@ void forward_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
     }
 
 // fill hdr
-    metadata.secondary_map.eport = eport_n;
-    delta = eport_h;
+    //metadata.secondary_map.eport = eport_n;
+    //delta = eport_h;
 // require to update switch's mapping
 
     if(metadata.is_update) {//
@@ -529,8 +532,8 @@ void forward_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
             list_entry_t *swap_entry = port_host_to_entry(swap_port_h);
             flow_id_t &swap_id = swap_entry->id;
 
-            wait_set[index] = {metadata.primary_map, {swap_id, swap_port_n}, 
-                                metadata.sw_time_net, timestamp, timestamp, NULL, NULL, true};
+            wait_set[index] = {{swap_id, swap_port_n}, (u8)(metadata.version + 1), 
+                                metadata.switch_port, timestamp, timestamp, NULL, NULL, true};
             // map entry
             swap_entry->is_waiting = 1;// locked, it will not be moved to list "avail" immediately
 
@@ -539,9 +542,10 @@ void forward_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
         }
         //clear this bit, 因为在返回的包中is_update和is_to_in/out最多只有一个为1
         metadata.is_update = 0;
-        delta = sub(delta, 0x2000);
+        delta = sub(0x0000, 0x0020);
+        metadata.checksum = htons(make_zero_negative(sub(ntohs(metadata.checksum), delta)));
     }
-    metadata.checksum = htons(make_zero_negative(sub(ntohs(metadata.checksum), delta)));
+    
 
 // send back
 send:
@@ -550,6 +554,10 @@ send:
 
 void backward_process(mytime_t timestamp, len_t packet_len, hdr_t * const hdr)
 {
+    /*
+     * 注意，对于反向的包，其metadata部分只有id和is_to_in/out是可用的，其余都是0
+     */
+
 // verify
     if(packet_len < sizeof(ethernet_t) + sizeof(nat_metadata_t) + sizeof(ip_t)) return;
 
@@ -591,7 +599,7 @@ void backward_process(mytime_t timestamp, len_t packet_len, hdr_t * const hdr)
     list_move_to_back(inuse_port_leader, entry);
 
 // heavy hitter detect
-    port_t index = ntohs(hdr->metadata.index);
+    port_t index = entry->index_host;
     heavy_hitter_count(index, entry_to_port_host(entry));
 
 // tranlate
@@ -631,12 +639,13 @@ void ack_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
     if(!wait_entry -> is_waiting) return; // Redundant ACK
     //debug_printf("3\n");
     // mismatch
-    if(memcmp(&wait_entry->primary_map, &hdr->metadata.primary_map, sizeof(map_entry_t)) != 0 ||
-        memcmp(&wait_entry->secondary_map, &hdr->metadata.secondary_map, sizeof(map_entry_t)) != 0) 
+    if(memcmp(&wait_entry->map.id, &hdr->metadata.id, sizeof(hdr->metadata.id)) != 0 ||
+        wait_entry->map.eport != hdr->metadata.switch_port ||
+        wait_entry->version != hdr->metadata.version) 
         return;
     //debug_printf("4\n");
-    list_entry_t *entry_sw = port_host_to_entry(ntohs(hdr->metadata.primary_map.eport));
-    list_entry_t *entry_nfv = port_host_to_entry(ntohs(hdr->metadata.secondary_map.eport));
+    list_entry_t *entry_sw = port_host_to_entry(ntohs(wait_entry->switch_port));
+    list_entry_t *entry_nfv = port_host_to_entry(ntohs(wait_entry->map.eport));
 
     assert(entry_sw->type == list_type::sw && entry_nfv->type == list_type::inuse);
 
@@ -652,10 +661,10 @@ void ack_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
     list_erase(wait_entry);
 
     debug_printf("\nreceive ACK\n");
-    debug_printf("primary\n");
-    print_map(hdr->metadata.primary_map.id, ntohs(hdr->metadata.primary_map.eport), index);
-    debug_printf("secondary\n");
-    print_map(hdr->metadata.secondary_map.id, ntohs(hdr->metadata.secondary_map.eport), index);
+    debug_printf("old switch port: %d\n", wait_set[index].switch_port);
+    debug_printf("new map: ");
+    print_map(wait_set[index].map.id, ntohs(wait_set[index].map.eport), index);
+    debug_printf("version %u -> %u\n", wait_set[index].version - 1, wait_set[index].version);
 }
 
 void do_aging(mytime_t timestamp)
@@ -685,7 +694,7 @@ void do_aging(mytime_t timestamp)
     int cnt = 0;
     while(entry != inuse_port_leader) {
         flow_id_t id = entry->id;
-        port_t index = entry->index;
+        port_t index = entry->index_host;
         port_t eport = entry_to_port_host(entry);
         print_map(id, eport, index);
         cnt++;

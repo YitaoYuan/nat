@@ -56,14 +56,15 @@ header nat_metadata_t {//36
     bit<8>      protocol;
     bit<8>      zero;
 
-    port_t      switch_eport;
+    port_t      switch_port;
+    version_t   version;
 
     bit         is_to_in;//最终会去往in
     bit         is_to_out;
     bit         is_update;
     bit<5>      zero;
 
-    version_t   version;
+    
 
     index_t     index; // index is the hash value of flow id
     time_t      nfv_time;// 因为一个ACK返回的时候wait_entry可能已经没了，所以时间需要记录在packet里
@@ -244,21 +245,16 @@ control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
         meta.checksum_error = false;
         if(meta.verify_metadata) {
             hash(checksum, HashAlgorithm.csum16, 32w0,
-            {hdr.metadata.primary_map_src_addr, 
-            hdr.metadata.primary_map_dst_addr, 
-            hdr.metadata.primary_map_src_port, 
-            hdr.metadata.primary_map_dst_port, 
-            hdr.metadata.primary_map_protocol,
-            hdr.metadata.primary_map_zero,
-            hdr.metadata.primary_map_eport,
+            {hdr.metadata.src_addr, 
+            hdr.metadata.dst_addr, 
+            hdr.metadata.src_port, 
+            hdr.metadata.dst_port, 
+            hdr.metadata.protocol,
+            hdr.metadata.zero,
 
-            hdr.metadata.secondary_map_src_addr, 
-            hdr.metadata.secondary_map_dst_addr, 
-            hdr.metadata.secondary_map_src_port, 
-            hdr.metadata.secondary_map_dst_port, 
-            hdr.metadata.secondary_map_protocol,
-            hdr.metadata.secondary_map_zero,
-            hdr.metadata.secondary_map_eport,
+            hdr.metadata.switch_port,
+
+            hdr.metadata.version,
 
             hdr.metadata.is_to_in,
             hdr.metadata.is_to_out,
@@ -266,8 +262,6 @@ control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
             hdr.metadata.zero,
 
             hdr.metadata.index,
-            
-            hdr.metadata.sw_time,
             hdr.metadata.nfv_time}, 
             32w1<<16);
             if(checksum != hdr.metadata.checksum) {
@@ -605,17 +599,17 @@ control MyIngress(inout headers hdr,
         hdr.metadata.protocol = meta.id.protocol;
         hdr.metadata.zero = 0;
 
-        hdr.metadata.switch_eport = meta.reg_map.eport;
+        hdr.metadata.switch_eport = send_update ? meta.reg_map.eport : 0;
         
         //hdr.metadata.primary_map = meta.entry.map;
         //hdr.metadata.secondary_map = {meta.id, 0};
         
         //hdr.metadata.is_to_in
         //hdr.metadata.is_to_out
-        hdr.metadata.is_update = send_update ? (bit)meta.timeout : 1w0;
+        hdr.metadata.is_update = send_update ? (bit)meta.timeout : 0;
         hdr.metadata.zero = 0;
-        hdr.metadata.version = meta.version;
-        hdr.metadata.index = meta.index;
+        hdr.metadata.version = send_update ? meta.version : 0;
+        hdr.metadata.index = send_update ? meta.index : 0;
         hdr.metadata.nfv_time = 0;
         hdr.metadata.checksum = 0;
     }
@@ -843,21 +837,16 @@ control MyComputeChecksum(inout headers hdr, inout metadata meta) {
 
         if(meta.update_metadata) {
             hash(hdr.metadata.checksum, HashAlgorithm.csum16, 32w0,
-            {hdr.metadata.primary_map_src_addr, 
-            hdr.metadata.primary_map_dst_addr, 
-            hdr.metadata.primary_map_src_port, 
-            hdr.metadata.primary_map_dst_port, 
-            hdr.metadata.primary_map_protocol,
-            hdr.metadata.primary_map_zero,
-            hdr.metadata.primary_map_eport,
+            {hdr.metadata.src_addr, 
+            hdr.metadata.dst_addr, 
+            hdr.metadata.src_port, 
+            hdr.metadata.dst_port, 
+            hdr.metadata.protocol,
+            hdr.metadata.zero,
 
-            hdr.metadata.secondary_map_src_addr, 
-            hdr.metadata.secondary_map_dst_addr, 
-            hdr.metadata.secondary_map_src_port, 
-            hdr.metadata.secondary_map_dst_port, 
-            hdr.metadata.secondary_map_protocol,
-            hdr.metadata.secondary_map_zero,
-            hdr.metadata.secondary_map_eport,
+            hdr.metadata.switch_port,
+
+            hdr.metadata.version,
 
             hdr.metadata.is_to_in,
             hdr.metadata.is_to_out,
@@ -865,8 +854,6 @@ control MyComputeChecksum(inout headers hdr, inout metadata meta) {
             hdr.metadata.zero,
 
             hdr.metadata.index,
-            
-            hdr.metadata.sw_time,
             hdr.metadata.nfv_time}, 
             32w1<<16);
         }
