@@ -247,29 +247,30 @@ control MyMetadataInit(inout headers hdr, inout metadata meta) {
 
 control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
     apply {
+        Checksum<bit<16>>(HashAlgorithm_t.CSUM16) csum16;
         bit<16> checksum;
         meta.checksum_error = false;
         if(meta.verify_metadata) {
-            hash(checksum, HashAlgorithm.csum16, 32w0,
-            {hdr.metadata.src_addr, 
-            hdr.metadata.dst_addr, 
-            hdr.metadata.src_port, 
-            hdr.metadata.dst_port, 
-            hdr.metadata.protocol,
-            hdr.metadata.zero1,
+            checksum = csum16.update(
+                {hdr.metadata.src_addr, 
+                hdr.metadata.dst_addr, 
+                hdr.metadata.src_port, 
+                hdr.metadata.dst_port, 
+                hdr.metadata.protocol,
+                hdr.metadata.zero1,
 
-            hdr.metadata.switch_port,
+                hdr.metadata.switch_port,
 
-            hdr.metadata.version,
+                hdr.metadata.version,
 
-            hdr.metadata.is_to_in,
-            hdr.metadata.is_to_out,
-            hdr.metadata.is_update,
-            hdr.metadata.zero2,
+                hdr.metadata.is_to_in,
+                hdr.metadata.is_to_out,
+                hdr.metadata.is_update,
+                hdr.metadata.zero2,
 
-            hdr.metadata.index,
-            hdr.metadata.nfv_time}, 
-            32w1<<16);
+                hdr.metadata.index,
+                hdr.metadata.nfv_time}
+            );
             if(checksum != hdr.metadata.checksum) {
                 meta.checksum_error = true;
                 return;
@@ -277,17 +278,17 @@ control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
         }
         
         if(meta.verify_ip) {
-            hash(checksum, HashAlgorithm.csum16, 32w0,
-            {hdr.ipv4.version,
-            hdr.ipv4.ihl,
-            hdr.ipv4.unused1,
-            hdr.ipv4.total_length,
-            hdr.ipv4.unused2,
-            hdr.ipv4.ttl,
-            hdr.ipv4.protocol,
-            hdr.ipv4.src_addr,
-            hdr.ipv4.dst_addr}, 
-            32w1<<16);
+            checksum = csum16.update(
+                {hdr.ipv4.version,
+                hdr.ipv4.ihl,
+                hdr.ipv4.unused1,
+                hdr.ipv4.total_length,
+                hdr.ipv4.unused2,
+                hdr.ipv4.ttl,
+                hdr.ipv4.protocol,
+                hdr.ipv4.src_addr,
+                hdr.ipv4.dst_addr}
+            );
             if(checksum != hdr.ipv4.checksum) {
                 meta.checksum_error = true;
                 return;
@@ -295,33 +296,33 @@ control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
         }
         
         if(meta.verify_tcp) {
-            hash(checksum, HashAlgorithm.csum16, 32w0,
-            {hdr.ipv4.src_addr, 
-            hdr.ipv4.dst_addr,
-            8w0,
-            hdr.ipv4.protocol,
-            meta.L4_length,
+            checksum = csum16.update(
+                {hdr.ipv4.src_addr, 
+                hdr.ipv4.dst_addr,
+                8w0,
+                hdr.ipv4.protocol,
+                meta.L4_length,
 
-            hdr.tcp.src_port,
-            hdr.tcp.dst_port,
-            hdr.tcp.unused1,
-            hdr.tcp.unused2}, 
-            32w1<<16);
+                hdr.tcp.src_port,
+                hdr.tcp.dst_port,
+                hdr.tcp.unused1,
+                hdr.tcp.unused2}
+            );
             meta.L4_checksum_partial = checksum;
         }
         
         if(meta.verify_udp) {
-            hash(checksum, HashAlgorithm.csum16, 32w0,
-            {hdr.ipv4.src_addr, 
-            hdr.ipv4.dst_addr,
-            8w0,
-            hdr.ipv4.protocol,
-            meta.L4_length,
+            checksum = csum16.update(
+                {hdr.ipv4.src_addr, 
+                hdr.ipv4.dst_addr,
+                8w0,
+                hdr.ipv4.protocol,
+                meta.L4_length,
 
-            hdr.udp.src_port,
-            hdr.udp.dst_port,
-            hdr.udp.unused}, 
-            32w1<<16);
+                hdr.udp.src_port,
+                hdr.udp.dst_port,
+                hdr.udp.unused}
+            );
             meta.L4_checksum_partial = checksum;
         }
     }
@@ -622,10 +623,10 @@ control MyIngress(inout headers hdr,
     }
 
     action get_index() {
+        Hash<index_t>(HashAlgorithm_t.CRC16) hashmap;
         ipv4_flow_id_t id = meta.id;
-        hash(meta.index, HashAlgorithm.crc16, (index_t)1, 
-        {id.src_addr, id.dst_addr, id.src_port, id.dst_port, id.protocol, id.zero}, 
-        (index_t)SWITCH_PORT_NUM-1);
+        meta.index = hashmap.get({id.src_addr, id.dst_addr, id.src_port, id.dst_port, id.protocol, id.zero}, 
+                                (index_t)1, (index_t)SWITCH_PORT_NUM-1);
         // port PORT_MIN and index 0 is reserved
     }
 
@@ -915,58 +916,58 @@ control MyIngress(inout headers hdr,
 
 control MyComputeChecksum(inout headers hdr, inout metadata meta) {
     apply {
-
+        Checksum<bit<16>>(HashAlgorithm_t.CSUM16) csum16;
         if(meta.update_metadata) {
-            hash(hdr.metadata.checksum, HashAlgorithm.csum16, 32w0,
-            {hdr.metadata.src_addr, 
-            hdr.metadata.dst_addr, 
-            hdr.metadata.src_port, 
-            hdr.metadata.dst_port, 
-            hdr.metadata.protocol,
-            hdr.metadata.zero1,
+            hdr.metadata.checksum = csum16.update(
+                {hdr.metadata.src_addr, 
+                hdr.metadata.dst_addr, 
+                hdr.metadata.src_port, 
+                hdr.metadata.dst_port, 
+                hdr.metadata.protocol,
+                hdr.metadata.zero1,
 
-            hdr.metadata.switch_port,
+                hdr.metadata.switch_port,
 
-            hdr.metadata.version,
+                hdr.metadata.version,
 
-            hdr.metadata.is_to_in,
-            hdr.metadata.is_to_out,
-            hdr.metadata.is_update,
-            hdr.metadata.zero2,
+                hdr.metadata.is_to_in,
+                hdr.metadata.is_to_out,
+                hdr.metadata.is_update,
+                hdr.metadata.zero2,
 
-            hdr.metadata.index,
-            hdr.metadata.nfv_time}, 
-            32w1<<16);
+                hdr.metadata.index,
+                hdr.metadata.nfv_time}
+            );
         }
         
         if(meta.update_ip) {
-            hash(hdr.ipv4.checksum, HashAlgorithm.csum16, 32w0,
-            {hdr.ipv4.version,
-            hdr.ipv4.ihl,
-            hdr.ipv4.unused1,
-            hdr.ipv4.total_length,
-            hdr.ipv4.unused2,
-            hdr.ipv4.ttl,
-            hdr.ipv4.protocol,
-            hdr.ipv4.src_addr,
-            hdr.ipv4.dst_addr}, 
-            32w1<<16);
+            hdr.ipv4.checksum = csum16.update(
+                {hdr.ipv4.version,
+                hdr.ipv4.ihl,
+                hdr.ipv4.unused1,
+                hdr.ipv4.total_length,
+                hdr.ipv4.unused2,
+                hdr.ipv4.ttl,
+                hdr.ipv4.protocol,
+                hdr.ipv4.src_addr,
+                hdr.ipv4.dst_addr}
+            );
         }
         bit<32> checksum;
         
         if(meta.update_tcp) {
-            hash(checksum, HashAlgorithm.csum16, 32w0,
-            {hdr.ipv4.src_addr, 
-            hdr.ipv4.dst_addr,
-            8w0,
-            hdr.ipv4.protocol,
-            meta.L4_length,
+            checksum = csum16.update(
+                {hdr.ipv4.src_addr, 
+                hdr.ipv4.dst_addr,
+                8w0,
+                hdr.ipv4.protocol,
+                meta.L4_length,
 
-            hdr.tcp.src_port,
-            hdr.tcp.dst_port,
-            hdr.tcp.unused1,
-            hdr.tcp.unused2}, 
-            32w1<<16);
+                hdr.tcp.src_port,
+                hdr.tcp.dst_port,
+                hdr.tcp.unused1,
+                hdr.tcp.unused2}
+            );
             checksum = (bit<32>)hdr.tcp.checksum + (checksum + (bit<32>)(0xffff^meta.L4_checksum_partial));
             checksum = (checksum & 0xffff) + (checksum >> 16);
             checksum = (checksum & 0xffff) + (checksum >> 16);
@@ -975,17 +976,17 @@ control MyComputeChecksum(inout headers hdr, inout metadata meta) {
         }
         
         if(meta.update_udp) {
-            hash(checksum, HashAlgorithm.csum16, 32w0,
-            {hdr.ipv4.src_addr, 
-            hdr.ipv4.dst_addr,
-            8w0,
-            hdr.ipv4.protocol,
-            meta.L4_length,
+            checksum = csum16.update(
+                {hdr.ipv4.src_addr, 
+                hdr.ipv4.dst_addr,
+                8w0,
+                hdr.ipv4.protocol,
+                meta.L4_length,
 
-            hdr.udp.src_port,
-            hdr.udp.dst_port,
-            hdr.udp.unused}, 
-            32w1<<16);
+                hdr.udp.src_port,
+                hdr.udp.dst_port,
+                hdr.udp.unused}
+            );
             checksum = (bit<32>)hdr.udp.checksum + (checksum + (bit<32>)(0xffff^meta.L4_checksum_partial));
             checksum = (checksum & 0xffff) + (checksum >> 16);
             checksum = (checksum & 0xffff) + (checksum >> 16);
