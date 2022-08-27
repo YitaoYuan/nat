@@ -202,8 +202,8 @@ parser ParserI(packet_in packet,
     state parse_ipv4 {
         packet.extract(hdr.ipv4);
         transition select({hdr.ipv4.protocol, hdr.ipv4.ihl}) {
-            {TCP_PROTOCOL, 4w5}: parse_tcp;
-            {UDP_PROTOCOL, 4w5}: parse_udp;
+            (TCP_PROTOCOL, 4w5): parse_tcp;
+            (UDP_PROTOCOL, 4w5): parse_udp;
         }
     }
 
