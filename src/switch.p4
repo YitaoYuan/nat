@@ -244,10 +244,11 @@ control MyMetadataInit(inout headers hdr, inout metadata meta) {
 }
 
 control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
-
-    Checksum<bit<16>>(HashAlgorithm_t.CSUM16) csum16;
+    
+    //Checksum<bit<16>>(HashAlgorithm_t.CSUM16) csum16;
 
     apply {
+        /*
         bit<16> checksum;
         meta.checksum_error = false;
         if(meta.verify_metadata) {
@@ -325,6 +326,7 @@ control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
             );
             meta.L4_checksum_partial = checksum;
         }
+        */
     }
 }
 
@@ -715,7 +717,7 @@ control IngressP(
 
         MyMetadataInit.apply(hdr, meta);
 
-        if(meta.parse_error) {
+        if(meta.parse_error || ig_intr_prsr_md.parser_err != error.NoError) {
             drop();
             return;
         }
