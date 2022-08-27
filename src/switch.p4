@@ -362,7 +362,7 @@ control MyIngress(inout headers hdr,
         default_action = drop();
     }
 
-    Hash<index_t>(HashAlgorithm_t.CSUM16) hashmap;
+    Hash<index_t>(HashAlgorithm_t.CRC16) hashmap;
     
     Register<bit<32>, bit<32>>((bit<32>)SWITCH_PORT_NUM, 0) map3;
     Register<bit<32>, bit<32>>((bit<32>)SWITCH_PORT_NUM, 0) map2;
