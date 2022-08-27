@@ -220,19 +220,21 @@ parser ParserI(packet_in packet,
 
 control MyMetadataInit(inout headers hdr, inout metadata meta) {
     apply {
-        meta.valid_bits = 0;
-        if(hdr.ethernet.isValid()) meta.valid_bits[3:3] = 1;
-        if(hdr.metadata.isValid()) meta.valid_bits[2:2] = 1;
-        if(hdr.ipv4.isValid()) meta.valid_bits[1:1] = 1;
-        if(hdr.tcp.isValid() || hdr.udp.isValid()) meta.valid_bits[0:0] = 1;
+        bit<4> valid_bits = 0;
         
+        if(hdr.ethernet.isValid()) valid_bits[3:3] = 1;
+        if(hdr.metadata.isValid()) valid_bits[2:2] = 1;
+        if(hdr.ipv4.isValid()) valid_bits[1:1] = 1;
+        if(hdr.tcp.isValid() || hdr.udp.isValid()) valid_bits[0:0] = 1;
+        
+        meta.valid_bits = valid_bits;
         /* 编译器有bug，不能像下面这样写
         meta.valid_bits = ( (bit)hdr.ethernet.isValid() ++
                             (bit)hdr.metadata.isValid() ++
                             (bit)hdr.ipv4.isValid() ++
                             (bit)(hdr.tcp.isValid()||hdr.udp.isValid()) );*/
 
-        meta.parse_error = (meta.valid_bits != 4w0b1100) && (meta.valid_bits != 4w0b1111) && (meta.valid_bits != 4w0b1011) ? true : false;
+        meta.parse_error = valid_bits != 4w0b1100 && valid_bits != 4w0b1111 && valid_bits != 4w0b1011;
         meta.verify_metadata = hdr.metadata.isValid() ? true : false;
         meta.verify_ip = hdr.ipv4.isValid() ? true : false;
         meta.verify_tcp = hdr.tcp.isValid() ? true : false;
