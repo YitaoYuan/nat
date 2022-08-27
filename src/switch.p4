@@ -246,8 +246,10 @@ control MyMetadataInit(inout headers hdr, inout metadata meta) {
 }
 
 control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
+
+    Checksum<bit<16>>(HashAlgorithm_t.CSUM16) csum16;
+
     apply {
-        Checksum<bit<16>>(HashAlgorithm_t.CSUM16) csum16;
         bit<16> checksum;
         meta.checksum_error = false;
         if(meta.verify_metadata) {
@@ -359,6 +361,8 @@ control MyIngress(inout headers hdr,
         size = 16;
         default_action = drop();
     }
+
+    Hash<index_t>(HashAlgorithm_t.CRC16) hashmap;
     
     Register<bit<32>, bit<32>>((bit<32>)SWITCH_PORT_NUM, 0) map3;
     Register<bit<32>, bit<32>>((bit<32>)SWITCH_PORT_NUM, 0) map2;
@@ -623,7 +627,6 @@ control MyIngress(inout headers hdr,
     }
 
     action get_index() {
-        Hash<index_t>(HashAlgorithm_t.CRC16) hashmap;
         ipv4_flow_id_t id = meta.id;
         meta.index = hashmap.get({id.src_addr, id.dst_addr, id.src_port, id.dst_port, id.protocol, id.zero}, 
                                 (index_t)1, (index_t)SWITCH_PORT_NUM-1);
@@ -915,8 +918,10 @@ control MyIngress(inout headers hdr,
 
 
 control MyComputeChecksum(inout headers hdr, inout metadata meta) {
+
+    Checksum<bit<16>>(HashAlgorithm_t.CSUM16) csum16;
+
     apply {
-        Checksum<bit<16>>(HashAlgorithm_t.CSUM16) csum16;
         if(meta.update_metadata) {
             hdr.metadata.checksum = csum16.update(
                 {hdr.metadata.src_addr, 
