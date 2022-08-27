@@ -629,8 +629,8 @@ control MyIngress(inout headers hdr,
 
     action get_index() {
         ipv4_flow_id_t id = meta.id;
-        meta.index = hashmap.get({id.src_addr, id.dst_addr, id.src_port, id.dst_port, id.protocol, id.zero}, 
-                                (index_t)0, (index_t)SWITCH_PORT_NUM);
+        meta.index = 1 + hashmap.get({id.src_addr, id.dst_addr, id.src_port, id.dst_port, id.protocol, id.zero}, 
+                                (index_t)0, (index_t)SWITCH_PORT_NUM-1);
         // port PORT_MIN and index 0 is reserved
     }
 
