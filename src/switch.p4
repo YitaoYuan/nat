@@ -228,14 +228,14 @@ control UnusedVerifyChecksum(inout headers hdr, inout metadata meta) {
 
 control MyMetadataInit(inout headers hdr, inout metadata meta) {
     apply {
-        //meta.valid_bits = 0;
-        //meta.valid_bits[3:3] = (bit)hdr.ethernet.isValid();
-        bit<4> tmp = (bit)hdr.ethernet.isValid() ++
-                            (bit)hdr.metadata.isValid() ++
-                            (bit)hdr.ipv4.isValid() ++
-                            (bit)(hdr.tcp.isValid()||hdr.udp.isValid());
-        meta.valid_bits = tmp;
-        /*meta.valid_bits = ( (bit)hdr.ethernet.isValid() ++
+        meta.valid_bits = 0;
+        if(hdr.ethernet.isValid()) meta.valid_bits[3:3] = 1;
+        if(hdr.metadata.isValid()) meta.valid_bits[2:2] = 1;
+        if(hdr.ipv4.isValid()) meta.valid_bits[1:1] = 1;
+        if(hdr.tcp.isValid() || hdr.udp.isValid()) meta.valid_bits[0:0] = 1;
+        
+        /* 编译器有bug，不能像下面这样写
+        meta.valid_bits = ( (bit)hdr.ethernet.isValid() ++
                             (bit)hdr.metadata.isValid() ++
                             (bit)hdr.ipv4.isValid() ++
                             (bit)(hdr.tcp.isValid()||hdr.udp.isValid()) );*/
