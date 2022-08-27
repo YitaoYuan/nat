@@ -240,9 +240,7 @@ control MyMetadataInit(inout headers hdr, inout metadata meta) {
                             (bit)hdr.ipv4.isValid() ++
                             (bit)(hdr.tcp.isValid()||hdr.udp.isValid()) );*/
 
-        meta.parse_error = meta.valid_bits != 4w0b1100 &&
-                           meta.valid_bits != 4w0b1111 &&
-                           meta.valid_bits != 4w0b1011;
+        meta.parse_error = meta.valid_bits != 4w0b1100 && meta.valid_bits != 4w0b1111 && meta.valid_bits != 4w0b1011;
         meta.verify_metadata = hdr.metadata.isValid() ? true : false;
         meta.verify_ip = hdr.ipv4.isValid() ? true : false;
         meta.verify_tcp = hdr.tcp.isValid() ? true : false;
