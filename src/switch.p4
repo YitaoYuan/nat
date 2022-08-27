@@ -945,7 +945,7 @@ control IngressP(
 *************************************************************************/
 
 
-control MyComputeChecksum(inout headers hdr, inout metadata meta) {
+control MyComputeChecksum(inout headers hdr, in metadata meta) {
 
     Checksum<bit<16>>(HashAlgorithm_t.CSUM16) csum16;
 
@@ -1110,8 +1110,6 @@ control DeparserI(
         packet.emit(hdr.ipv4);
         packet.emit(hdr.tcp);
         packet.emit(hdr.udp);
-
-
     }
 }
 
