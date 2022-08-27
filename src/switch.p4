@@ -1,7 +1,10 @@
 /* -*- P4_16 -*- */
 #include <core.p4>
-#include <v1model.p4>
-#include <tofino.p4>
+#if __TARGET_TOFINO__ == 2
+#include <t2na.p4>
+#else
+#include <tna.p4>
+#endif
 #include "shared_metadata.h"
 
 typedef bit<9>  egress_spec_t;
@@ -171,10 +174,10 @@ struct metadata {
 *********************** P A R S E R  ***********************************
 *************************************************************************/
 
-parser MyParser(packet_in packet,
-                out headers hdr,
-                inout metadata meta,
-                inout standard_metadata_t standard_metadata) {
+parser ParserI(packet_in packet,
+               out headers hdr,
+               out metadata meta,
+               out ingress_intrinsic_metadata_t ig_intr_md) {
 
     state start {
         transition parse_ethernet;
@@ -213,16 +216,6 @@ parser MyParser(packet_in packet,
     state parse_udp {
         packet.extract(hdr.udp);
         transition accept;
-    }
-}
-
-
-/*************************************************************************
-************   C H E C K S U M    V E R I F I C A T I O N   *************
-*************************************************************************/
-control UnusedVerifyChecksum(inout headers hdr, inout metadata meta) {
-    apply{
-
     }
 }
 
@@ -341,16 +334,20 @@ control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
 *************************************************************************/
 
 
-control MyIngress(inout headers hdr,
-                  inout metadata meta,
-                  inout standard_metadata_t standard_metadata) {
+control IngressP(
+        inout headers hdr,
+        inout metadata meta,
+        in ingress_intrinsic_metadata_t ig_intr_md,
+        in ingress_intrinsic_metadata_from_parser_t ig_intr_prsr_md,
+        inout ingress_intrinsic_metadata_for_deparser_t ig_intr_dprs_md,
+        inout ingress_intrinsic_metadata_for_tm_t ig_intr_tm_md) {
 
     action drop() {
-        mark_to_drop(standard_metadata);
+        ig_intr_dprs_md.drop_ctl = 0x1;
     }
 
     action ipv4_forward(bit<9> port, mac_addr_t dmac) {
-        standard_metadata.egress_spec = port;
+        ig_intr_tm_md.ucast_egress_port = port;
         hdr.ethernet.dst_addr = dmac;
         hdr.ipv4.ttl = hdr.ipv4.ttl - 1;
     }
@@ -562,7 +559,7 @@ control MyIngress(inout headers hdr,
 
         meta.control_ignore = false;
 
-        if(standard_metadata.ingress_port == NFV_PORT) {
+        if(ig_intr_md.ingress_port == NFV_PORT) {
             meta.is_from_nfv = true;
 
             if(meta.valid_bits != 4w0b1100 && meta.valid_bits != 4w0b1111) {
@@ -639,7 +636,7 @@ control MyIngress(inout headers hdr,
     }
 
     action get_time() {
-        meta.time = 1w0 ++ (bit<31>)standard_metadata.ingress_global_timestamp;
+        meta.time = 1w0 ++ (bit<31>)ig_intr_md.ingress_mac_tstamp;
         // 48->31->32
     }    
     /*
@@ -694,32 +691,15 @@ control MyIngress(inout headers hdr,
     }
 
     action send_to_NFV() {
-        standard_metadata.egress_spec = 2;
+        ig_intr_tm_md.ucast_egress_port = 2;
         hdr.ethernet.src_addr = 48w1;
         hdr.ethernet.dst_addr = 48w2;
     }
 
     apply {
-        meta.valid_bits = 0;
-        if(hdr.ethernet.isValid()) meta.valid_bits[3:3] = 1;
-        if(hdr.metadata.isValid()) meta.valid_bits[2:2] = 1;
-        if(hdr.ipv4.isValid()) meta.valid_bits[1:1] = 1;
-        if(hdr.tcp.isValid() || hdr.udp.isValid()) meta.valid_bits[0:0] = 1;
-        
-        /* 编译器有bug，不能像下面这样写
-        meta.valid_bits = ( (bit)hdr.ethernet.isValid() ++
-                            (bit)hdr.metadata.isValid() ++
-                            (bit)hdr.ipv4.isValid() ++
-                            (bit)(hdr.tcp.isValid()||hdr.udp.isValid()) );*/
+        ig_intr_tm_md.bypass_egress = true;
 
-        meta.parse_error = (meta.valid_bits != 4w0b1100) && (meta.valid_bits != 4w0b1111) && (meta.valid_bits != 4w0b1011) ? true : false;
-        meta.verify_metadata = hdr.metadata.isValid() ? true : false;
-        meta.verify_ip = hdr.ipv4.isValid() ? true : false;
-        meta.verify_tcp = hdr.tcp.isValid() ? true : false;
-        meta.verify_udp = (hdr.udp.isValid() ? true : false) && hdr.udp.checksum != 0;
-        meta.is_tcp = hdr.tcp.isValid() ? true : false;
-        if(hdr.ipv4.isValid()) meta.L4_length = hdr.ipv4.total_length - (bit<16>)hdr.ipv4.ihl * 4;
-        //MyMetadataInit.apply(hdr, meta);
+        MyMetadataInit.apply(hdr, meta);
 
         if(meta.parse_error) {
             drop();
@@ -1092,9 +1072,11 @@ control MyComputeChecksum(inout headers hdr, inout metadata meta) {
     }
 }
 
-control MyEgress(inout headers hdr,
-                 inout metadata meta,
-                 inout standard_metadata_t standard_metadata) {
+control DeparserI(
+        packet_out b,
+        inout headers hdr,
+        in metadata meta,
+        in ingress_intrinsic_metadata_for_deparser_t ig_intr_dprsr_md) {
 
     action get_smac(mac_addr_t smac) {
         hdr.ethernet.src_addr = smac;
@@ -1102,7 +1084,7 @@ control MyEgress(inout headers hdr,
 
     table port2smac{
         key = {
-            standard_metadata.egress_port: exact;
+            ig_intr_tm_md.ucast_egress_port: exact;
         }
         actions = {
             get_smac;
@@ -1115,48 +1097,49 @@ control MyEgress(inout headers hdr,
         meta.update_ip = hdr.ipv4.isValid();
         meta.update_tcp = hdr.tcp.isValid();
         meta.update_udp = hdr.udp.isValid() && (hdr.udp.checksum != 0);
-        if(standard_metadata.egress_port != NFV_PORT) {
+        if(ig_intr_tm_md.ucast_egress_port != NFV_PORT) {
             hdr.metadata.setInvalid();
             hdr.ethernet.ether_type = TYPE_IPV4;
             port2smac.apply();
         }
         MyComputeChecksum.apply(hdr, meta);
-    }
-}
 
-/*************************************************************************
-*************   C H E C K S U M    C O M P U T A T I O N   **************
-*************************************************************************/
-
-control UnusedComputeChecksum(inout headers hdr, inout metadata meta) {
-    apply{
-
-    }
-}
-
-/*************************************************************************
-***********************  D E P A R S E R  *******************************
-*************************************************************************/
-
-control MyDeparser(packet_out packet, in headers hdr) {
-    apply {
         packet.emit(hdr.ethernet);
         packet.emit(hdr.metadata);
         packet.emit(hdr.ipv4);
         packet.emit(hdr.tcp);
         packet.emit(hdr.udp);
+
+
     }
 }
 
-/*************************************************************************
-***********************  S W I T C H  *******************************
-*************************************************************************/
+parser ParserE(packet_in b,
+               out headers hdr,
+               out metadata meta,
+               out egress_intrinsic_metadata_t eg_intr_md) {
+    state start {
+        transition accept;
+    }
+}
 
-V1Switch(
-MyParser(),
-UnusedVerifyChecksum(),
-MyIngress(),
-MyEgress(),
-UnusedComputeChecksum(),
-MyDeparser()
-) main;
+control EgressP(
+        inout headers hdr,
+        inout metadata meta,
+        in egress_intrinsic_metadata_t eg_intr_md,
+        in egress_intrinsic_metadata_from_parser_t eg_intr_prsr_md,
+        inout egress_intrinsic_metadata_for_deparser_t ig_intr_dprs_md,
+        inout egress_intrinsic_metadata_for_output_port_t eg_intr_oport_md) {
+    apply { }
+}
+
+control DeparserE(packet_out b,
+                  inout headers hdr,
+                  in metadata meta,
+                  in egress_intrinsic_metadata_for_deparser_t ig_intr_dprs_md) {
+    apply { }
+}
+
+Pipeline(ParserI(), IngressP(), DeparserI(), ParserE(), EgressP(), DeparserE()) pipe;
+
+Switch(pipe) main;
