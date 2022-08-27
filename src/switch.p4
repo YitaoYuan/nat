@@ -713,6 +713,7 @@ control IngressP(
     }
 
     apply {
+        /*
         ig_intr_tm_md.bypass_egress = true;
 
         MyMetadataInit.apply(hdr, meta);
@@ -729,7 +730,7 @@ control IngressP(
             return;
         }
         //if(hdr.ethernet.ether_type != TYPE_IPV4) {drop(); return;}
-        // TODO******************************************************************
+        // TODO
         // 还需要判断下DSTMAC是不是本地端口的MAC
         if(!hdr.metadata.isValid()) hdr.metadata.setValid();
 
@@ -795,34 +796,7 @@ control IngressP(
             get_index();
 
             //read_entry();
-            /*
-            if(meta.entry.map.eport == 0 || (meta.primary_timeout && meta.secondary_timeout)) {
-                meta.entry.map.id = meta.id;
-                meta.entry.primary_time = meta.time;
-
-                if(meta.entry.map.eport == 0) { // initialize
-                    meta.entry.map.eport = meta.index + PORT_MIN;
-                    reverse_map.write((bit<32>)(meta.entry.map.eport - PORT_MIN), meta.index);
-                }
-                map_write(meta.index, meta.entry);// need to be atomic from read to write !!!
-                translate();
-                ip2port_dmac.apply();
-            }
-            else if(!meta.primary_timeout && meta.match) {
-                meta.entry.primary_time = meta.time;
-
-                map_write(meta.index, meta.entry);
-                translate();
-                ip2port_dmac.apply();
-            }
-            else {
-                meta.entry.secondary_time = meta.time;
-
-                map_write(meta.index, meta.entry);
-
-                set_metadata(true);
-                send_to_NFV();
-            } */
+            
             map_read(meta.index);
             meta.match = meta.reg_map.id == meta.id;
             if(meta.match) {
@@ -855,51 +829,7 @@ control IngressP(
             meta.index = hdr.metadata.index;
             meta.version = hdr.metadata.version;
             update_version(meta.index);
-            /*
-            map_read(meta.entry, meta.index);
-
-            bool primary_map_match = 
-                meta.entry.map.id.src_addr == hdr.metadata.primary_map_src_addr
-                && meta.entry.map.id.dst_addr == hdr.metadata.primary_map_dst_addr
-                && meta.entry.map.id.src_port == hdr.metadata.primary_map_src_port
-                && meta.entry.map.id.dst_port == hdr.metadata.primary_map_dst_port
-                && meta.entry.map.id.protocol == hdr.metadata.primary_map_protocol
-                && meta.entry.map.id.zero == hdr.metadata.primary_map_zero
-                && meta.entry.map.eport == hdr.metadata.primary_map_eport;
-            
-            bool secondary_map_match = 
-                meta.entry.map.id.src_addr == hdr.metadata.secondary_map_src_addr
-                && meta.entry.map.id.dst_addr == hdr.metadata.secondary_map_dst_addr
-                && meta.entry.map.id.src_port == hdr.metadata.secondary_map_src_port
-                && meta.entry.map.id.dst_port == hdr.metadata.secondary_map_dst_port
-                && meta.entry.map.id.protocol == hdr.metadata.secondary_map_protocol
-                && meta.entry.map.id.zero == hdr.metadata.secondary_map_zero
-                && meta.entry.map.eport == hdr.metadata.secondary_map_eport;
-
-            if(!primary_map_match && !secondary_map_match) {
-                drop();
-                return;
-            }
-                
-            if(primary_map_match) {
-                meta.entry.map = {
-                    {hdr.metadata.secondary_map_src_addr,
-                    hdr.metadata.secondary_map_dst_addr,
-                    hdr.metadata.secondary_map_src_port,
-                    hdr.metadata.secondary_map_dst_port,
-                    hdr.metadata.secondary_map_protocol,
-                    hdr.metadata.secondary_map_zero},
-                    hdr.metadata.secondary_map_eport
-                };
-
-                meta.entry.primary_time = meta.time;
-
-                reverse_map.write((bit<32>)(hdr.metadata.primary_map_eport - PORT_MIN), (index_t)0);
-                reverse_map.write((bit<32>)(hdr.metadata.secondary_map_eport - PORT_MIN), meta.index);
-
-                map_write(meta.index, meta.entry);
-            }
-            */
+    
             //if meta.entry.map == hdr.metadata.secondary_map return a redundent ACK
             if(meta.version_diff > 1) {
                 drop();
@@ -939,6 +869,7 @@ control IngressP(
             hdr.ethernet.ether_type = TYPE_IPV4;
             port2smac.apply();
         }
+        */
     }
 }
 
