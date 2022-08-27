@@ -612,8 +612,7 @@ control MyIngress(inout headers hdr,
     }
 
     action get_time() {
-        bit<31>trunc = (bit<31>)standard_metadata.ingress_global_timestamp;
-        meta.time = (bit<32>)trunc;
+        meta.time = 1w0 ++ (bit<31>)standard_metadata.ingress_global_timestamp;
         // 48->31->32
     }    
     /*
