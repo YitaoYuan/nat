@@ -130,7 +130,7 @@ struct metadata {
     bool            verify_udp;
     bool            is_tcp;
     bit<16>         L4_length;
-    bit<4>         valid_bits;
+    bit<4>          valid_bits;
 
     /* checksum -> ingress */
     bool            checksum_error;
@@ -228,10 +228,10 @@ control UnusedVerifyChecksum(inout headers hdr, inout metadata meta) {
 
 control MyMetadataInit(inout headers hdr, inout metadata meta) {
     apply {
-        meta.valid_bits =   (bit)hdr.ethernet.isValid() ++
+        meta.valid_bits = ( (bit)hdr.ethernet.isValid() ++
                             (bit)hdr.metadata.isValid() ++
                             (bit)hdr.ipv4.isValid() ++
-                            (bit)(hdr.tcp.isValid()||hdr.udp.isValid());
+                            (bit)(hdr.tcp.isValid()||hdr.udp.isValid()) );
 
         meta.parse_error = meta.valid_bits != 4w0b1100 &&
                            meta.valid_bits != 4w0b1111 &&
