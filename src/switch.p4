@@ -239,7 +239,8 @@ control MyMetadataInit(inout headers hdr, inout metadata meta) {
         bool tmp_bool2 = valid_bits != 4w0b1111;
         tmp_bool1 = tmp_bool1 && tmp_bool2;
         tmp_bool2 = valid_bits != 4w0b1011;
-        meta.parse_error = tmp_bool1 && tmp_bool2;
+        tmp_bool1 = tmp_bool1 && tmp_bool2;
+        meta.parse_error = tmp_bool1;
 
         
         meta.verify_metadata = hdr.metadata.isValid() ? true : false;
