@@ -353,7 +353,7 @@ control MyIngress(inout headers hdr,
         size = 16;
         default_action = drop();
     }
-    @pragma stateful_field_slice
+    
     Register<bit<32>, bit<32>>((bit<32>)SWITCH_PORT_NUM, 0) map3;
     Register<bit<32>, bit<32>>((bit<32>)SWITCH_PORT_NUM, 0) map2;
     Register<bit<32>, bit<32>>((bit<32>)SWITCH_PORT_NUM, 0) map1;
