@@ -640,15 +640,7 @@ control IngressP(
         meta.time = 1w0 ++ (bit<31>)ig_intr_md.ingress_mac_tstamp;
         // 48->31->32
     }    
-    /*
-    action read_entry() {
-        map_read(meta.entry, meta.index);
 
-        meta.primary_timeout = meta.time - meta.entry.primary_time > AGING_TIME_US;
-        meta.secondary_timeout = meta.time - meta.entry.secondary_time > AGING_TIME_US;
-        meta.match = meta.entry.map.id == meta.id;
-    }
-    */
     action translate() {
         hdr.ipv4.src_addr = NAT_ADDR;
         if(meta.is_tcp) 
@@ -712,7 +704,7 @@ control IngressP(
     }
 
     apply {
-        /*
+        
         ig_intr_tm_md.bypass_egress = true;
 
         MyMetadataInit.apply(hdr, meta);
@@ -721,7 +713,7 @@ control IngressP(
             drop();
             return;
         }
-
+        /*
         MyVerifyChecksum.apply(hdr, meta);
 
         if(meta.checksum_error) {
