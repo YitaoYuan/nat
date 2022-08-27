@@ -717,7 +717,7 @@ control IngressP(
 
         MyMetadataInit.apply(hdr, meta);
 
-        if(meta.parse_error || ig_intr_prsr_md.parser_err != error.NoError) {
+        if(meta.parse_error || ig_intr_prsr_md.parser_err != 0) {
             drop();
             return;
         }
