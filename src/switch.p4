@@ -154,7 +154,8 @@ struct metadata {
     bool            match;
     version_t       version_diff;
     version_t       version;
-    
+    bool            apply_dst;
+
     /* ingress -> deparser */
     bool            update_metadata;
     bool            update_ip;
