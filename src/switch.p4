@@ -201,10 +201,9 @@ parser ParserI(packet_in packet,
 
     state parse_ipv4 {
         packet.extract(hdr.ipv4);
-        bit chk = (bit)(hdr.ipv4.version == 4 && hdr.ipv4.ihl == 5);
-        transition select(hdr.ipv4.protocol ++ chk) {
-            TCP_PROTOCOL ++ 1w1: parse_tcp;
-            UDP_PROTOCOL ++ 1w1: parse_udp;
+        transition select(hdr.ipv4.protocol ++ hdr.ipv4.ihl) {
+            TCP_PROTOCOL ++ 4w5: parse_tcp;
+            UDP_PROTOCOL ++ 4w5: parse_udp;
         }
     }
 
