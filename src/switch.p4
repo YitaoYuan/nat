@@ -149,6 +149,7 @@ struct metadata {
     bool            timeout;
     bool            match;
     version_t       version_diff;
+    version_t       version;
     
     /* ingress -> deparser */
     bool            update_metadata;
@@ -561,7 +562,8 @@ control MyIngress(inout headers hdr,
     }
 
     action get_time() {
-        meta.time = (bit<31>)standard_metadata.ingress_global_timestamp;//truncate 48->31
+        meta.time = (bit<32>)(bit<31>)standard_metadata.ingress_global_timestamp;
+        // 48->31->32
     }    
     /*
     action read_entry() {
@@ -575,17 +577,17 @@ control MyIngress(inout headers hdr,
     action translate() {
         hdr.ipv4.src_addr = NAT_ADDR;
         if(meta.is_tcp) 
-            hdr.tcp.src_port = meta.entry.map.eport;
+            hdr.tcp.src_port = meta.reg_map.eport;
         else
-            hdr.udp.src_port = meta.entry.map.eport;
+            hdr.udp.src_port = meta.reg_map.eport;
     }
     
     action reverse_translate() {
-        hdr.ipv4.dst_addr = meta.entry.map.id.src_addr;
+        hdr.ipv4.dst_addr = meta.reg_map.id.src_addr;
         if(meta.is_tcp)
-            hdr.tcp.dst_port = meta.entry.map.id.src_port;
+            hdr.tcp.dst_port = meta.reg_map.id.src_port;
         else
-            hdr.udp.dst_port = meta.entry.map.id.src_port;
+            hdr.udp.dst_port = meta.reg_map.id.src_port;
     }
 
     action set_metadata(bool send_update) {
@@ -599,7 +601,7 @@ control MyIngress(inout headers hdr,
         hdr.metadata.protocol = meta.id.protocol;
         hdr.metadata.zero1 = 0;
 
-        hdr.metadata.switch_eport = send_update ? meta.reg_map.eport : 0;
+        hdr.metadata.switch_port = send_update ? meta.reg_map.eport : 0;
         
         //hdr.metadata.primary_map = meta.entry.map;
         //hdr.metadata.secondary_map = {meta.id, 0};
@@ -671,13 +673,13 @@ control MyIngress(inout headers hdr,
 
             map_read(meta.index);
 
-            if(meta.map.eport != eport) {//这个if是冗余的,因为不用的reverse_map会置零
+            if(meta.reg_map.eport != eport) {//这个if是冗余的,因为不用的reverse_map会置零
                 set_metadata(false);
                 send_to_NFV();
                 return;
             }
 
-            ipv4_flow_id_t map_id = meta.map.id;
+            ipv4_flow_id_t map_id = meta.reg_map.id;
 
             if({map_id.dst_addr, map_id.dst_port, map_id.protocol} != {src_addr, src_port, protocol}) {
                 // mismatch
@@ -813,13 +815,13 @@ control MyIngress(inout headers hdr,
                     hdr.metadata.dst_port, 
                     hdr.metadata.protocol,
                     0},
-                    hdr.metadata.switch_eport
+                    hdr.metadata.switch_port
                 };
-                reg_reverse_map_write(meta.reg_map.eport - PORT_MIN);
+                reverse_map_write(meta.reg_map.eport - PORT_MIN);
                 map_swap(meta.index);
                 write_time(meta.index);
 
-                reg_reverse_map_clear(meta.reg_map.eport - PORT_MIN);
+                reverse_map_clear(meta.reg_map.eport - PORT_MIN);
             }
 
             send_to_NFV();
