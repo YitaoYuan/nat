@@ -243,11 +243,11 @@ control MyMetadataInit(inout headers hdr, inout metadata meta) {
         meta.parse_error = meta.valid_bits != 4w0b1100 &&
                            meta.valid_bits != 4w0b1111 &&
                            meta.valid_bits != 4w0b1011;
-        meta.verify_metadata = hdr.metadata.isValid();
-        meta.verify_ip = hdr.ipv4.isValid();
-        meta.verify_tcp = hdr.tcp.isValid();
-        meta.verify_udp = hdr.udp.isValid() && hdr.udp.checksum != 0;
-        meta.is_tcp = hdr.tcp.isValid();
+        meta.verify_metadata = hdr.metadata.isValid() ? true : false;
+        meta.verify_ip = hdr.ipv4.isValid() ? true : false;
+        meta.verify_tcp = hdr.tcp.isValid() ? true : false;
+        meta.verify_udp = (hdr.udp.isValid() ? true : false) && hdr.udp.checksum != 0;
+        meta.is_tcp = hdr.tcp.isValid() ? true : false;
         if(hdr.ipv4.isValid()) meta.L4_length = hdr.ipv4.total_length - (bit<16>)hdr.ipv4.ihl * 4;
     }
 }
