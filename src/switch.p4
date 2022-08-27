@@ -961,7 +961,7 @@ control MyComputeChecksum(inout headers hdr, inout metadata meta) {
         bit<32> checksum;
         
         if(meta.update_tcp) {
-            checksum = csum16.update(
+            checksum = (bit<32>)csum16.update(
                 {hdr.ipv4.src_addr, 
                 hdr.ipv4.dst_addr,
                 8w0,
@@ -981,7 +981,7 @@ control MyComputeChecksum(inout headers hdr, inout metadata meta) {
         }
         
         if(meta.update_udp) {
-            checksum = csum16.update(
+            checksum = (bit<32>)csum16.update(
                 {hdr.ipv4.src_addr, 
                 hdr.ipv4.dst_addr,
                 8w0,
