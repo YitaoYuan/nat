@@ -696,6 +696,20 @@ control IngressP(
         hdr.ethernet.dst_addr = 48w2;
     }
 
+    action get_smac(mac_addr_t smac) {
+        hdr.ethernet.src_addr = smac;
+    }
+
+    table port2smac{
+        key = {
+            ig_intr_tm_md.ucast_egress_port: exact;
+        }
+        actions = {
+            get_smac;
+        }
+        size = 16;
+    }
+
     apply {
         ig_intr_tm_md.bypass_egress = true;
 
@@ -741,40 +755,38 @@ control IngressP(
 
             reverse_map_read(eport - PORT_MIN);// -> meta.index
 
-            if(meta.index == 0) { // not in switch
-                set_metadata(false);
-                send_to_NFV();
-                return;
-            }
+            // 注意！！这里读出来的meta.index可能为0
 
             //assert(meta.index < SWITCH_PORT_NUM); //
 
-            map_read(meta.index);
+            map_read(meta.index);//meta.index可能为0
 
-            if(meta.reg_map.eport != eport) {//这个if是冗余的,因为不用的reverse_map会置零
+            
+            if(meta.index == 0 || meta.reg_map.eport != eport) {
+                // eport is not keep by switch
                 set_metadata(false);
                 send_to_NFV();
-                return;
             }
+            else {
+                ipv4_flow_id_t map_id = meta.reg_map.id;
 
-            ipv4_flow_id_t map_id = meta.reg_map.id;
+                if({map_id.dst_addr, map_id.dst_port, map_id.protocol} != {src_addr, src_port, protocol}) {
+                    // eport is keep by switch but id mismatch
+                    drop();
+                    return;
+                }
+                
+                update_time_on_match(meta.index);
+                if(meta.timeout) {
+                    // aging
+                    drop();
+                    return;
+                }
 
-            if({map_id.dst_addr, map_id.dst_port, map_id.protocol} != {src_addr, src_port, protocol}) {
-                // mismatch
-                drop();
-                return;
+                reverse_translate();
+                meta.apply_dst = true;
+                //ip2port_dmac.apply();
             }
-            
-            update_time_on_match(meta.index);
-            if(meta.timeout) {
-                // aging
-                drop();
-                return;
-            }
-
-            reverse_translate();
-            meta.apply_dst = true;
-            //ip2port_dmac.apply();
         }
         else if(!meta.is_from_nfv && hdr.metadata.is_to_out == 1) {
             get_id();
@@ -905,13 +917,25 @@ control IngressP(
                 map_swap(meta.index);
                 write_time(meta.index);
 
-                reverse_map_clear(meta.reg_map.eport - PORT_MIN);
+                //为了时序上是先reverse_map后map，我觉得最好不要写下面这行
+                //reverse_map_clear(meta.reg_map.eport - PORT_MIN);
             }
 
             send_to_NFV();
         }
         if(meta.apply_dst) {
             ip2port_dmac.apply();
+        }
+        
+        meta.update_metadata = hdr.metadata.isValid();
+        meta.update_ip = hdr.ipv4.isValid();
+        meta.update_tcp = hdr.tcp.isValid();
+        meta.update_udp = hdr.udp.isValid() && (hdr.udp.checksum != 0);
+
+        if(ig_intr_tm_md.ucast_egress_port != NFV_PORT) {
+            hdr.metadata.setInvalid();
+            hdr.ethernet.ether_type = TYPE_IPV4;
+            port2smac.apply();
         }
     }
 }
@@ -1073,35 +1097,12 @@ control MyComputeChecksum(inout headers hdr, inout metadata meta) {
 }
 
 control DeparserI(
-        packet_out b,
+        packet_out packet,
         inout headers hdr,
         in metadata meta,
         in ingress_intrinsic_metadata_for_deparser_t ig_intr_dprsr_md) {
 
-    action get_smac(mac_addr_t smac) {
-        hdr.ethernet.src_addr = smac;
-    }
-
-    table port2smac{
-        key = {
-            ig_intr_tm_md.ucast_egress_port: exact;
-        }
-        actions = {
-            get_smac;
-        }
-        size = 16;
-    }
-
     apply{
-        meta.update_metadata = hdr.metadata.isValid();
-        meta.update_ip = hdr.ipv4.isValid();
-        meta.update_tcp = hdr.tcp.isValid();
-        meta.update_udp = hdr.udp.isValid() && (hdr.udp.checksum != 0);
-        if(ig_intr_tm_md.ucast_egress_port != NFV_PORT) {
-            hdr.metadata.setInvalid();
-            hdr.ethernet.ether_type = TYPE_IPV4;
-            port2smac.apply();
-        }
         MyComputeChecksum.apply(hdr, meta);
 
         packet.emit(hdr.ethernet);
