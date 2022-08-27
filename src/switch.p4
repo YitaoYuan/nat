@@ -657,6 +657,10 @@ control MyIngress(inout headers hdr,
             hdr.udp.dst_port = meta.reg_map.id.src_port;
     }
 
+    action set_egport_dmac() {
+        ip2port_dmac.apply();
+    }
+
     action set_metadata(bool send_update) {
         hdr.ethernet.ether_type = TYPE_METADATA;
 
@@ -762,7 +766,7 @@ control MyIngress(inout headers hdr,
             }
 
             reverse_translate();
-            ip2port_dmac.apply();
+            set_egport_dmac();
         }
         else if(!meta.is_from_nfv && hdr.metadata.is_to_out == 1) {
             get_id();
@@ -803,7 +807,7 @@ control MyIngress(inout headers hdr,
                 update_time_on_match(meta.index);
                 if(!meta.timeout) {
                     translate();
-                    ip2port_dmac.apply();
+                    set_egport_dmac();
                     return;
                 }
             }
@@ -815,10 +819,10 @@ control MyIngress(inout headers hdr,
             send_to_NFV();
         }
         else if(meta.is_from_nfv && hdr.metadata.is_to_in == 1) {
-            ip2port_dmac.apply();
+            set_egport_dmac();
         }
         else if(meta.is_from_nfv && hdr.metadata.is_to_out == 1) {
-            ip2port_dmac.apply();
+            set_egport_dmac();
         }
         else if(meta.is_from_nfv && hdr.metadata.is_update == 1) {
             meta.index = hdr.metadata.index;
