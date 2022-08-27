@@ -228,10 +228,11 @@ control UnusedVerifyChecksum(inout headers hdr, inout metadata meta) {
 
 control MyMetadataInit(inout headers hdr, inout metadata meta) {
     apply {
-        meta.valid_bits = ( (bit)hdr.ethernet.isValid() ++
+        meta.valid_bits = 4w0b0000;
+        /*meta.valid_bits = ( (bit)hdr.ethernet.isValid() ++
                             (bit)hdr.metadata.isValid() ++
                             (bit)hdr.ipv4.isValid() ++
-                            (bit)(hdr.tcp.isValid()||hdr.udp.isValid()) );
+                            (bit)(hdr.tcp.isValid()||hdr.udp.isValid()) );*/
 
         meta.parse_error = meta.valid_bits != 4w0b1100 &&
                            meta.valid_bits != 4w0b1111 &&
