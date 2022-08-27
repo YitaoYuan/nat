@@ -170,8 +170,8 @@ const u32 HEAVY_HITTER_REBOOT_THRESHOLD = 128;
  * predefined MAC address is in network byte order
  */
 
-static_assert(SHARED_SWITCH_INNER_MAC < 256u);
-static_assert(SHARED_NFV_INNER_MAC < 256u);
+static_assert(SHARED_SWITCH_INNER_MAC < 256u, "");
+static_assert(SHARED_NFV_INNER_MAC < 256u, "");
 const u8 SWITCH_INNER_MAC[6] = {0, 0, 0, 0, 0, SHARED_SWITCH_INNER_MAC};
 const u8 NFV_INNER_MAC[6] = {0, 0, 0, 0, 0, SHARED_NFV_INNER_MAC};
 
