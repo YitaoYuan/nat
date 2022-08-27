@@ -54,7 +54,7 @@ header nat_metadata_t {//36
     port_t      src_port;
     port_t      dst_port;
     bit<8>      protocol;
-    bit<8>      zero;
+    bit<8>      zero1;
 
     port_t      switch_port;
     version_t   version;
@@ -62,7 +62,7 @@ header nat_metadata_t {//36
     bit         is_to_in;//最终会去往in
     bit         is_to_out;
     bit         is_update;
-    bit<5>      zero;
+    bit<5>      zero2;
 
     
 
@@ -250,7 +250,7 @@ control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
             hdr.metadata.src_port, 
             hdr.metadata.dst_port, 
             hdr.metadata.protocol,
-            hdr.metadata.zero,
+            hdr.metadata.zero1,
 
             hdr.metadata.switch_port,
 
@@ -259,7 +259,7 @@ control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
             hdr.metadata.is_to_in,
             hdr.metadata.is_to_out,
             hdr.metadata.is_update,
-            hdr.metadata.zero,
+            hdr.metadata.zero2,
 
             hdr.metadata.index,
             hdr.metadata.nfv_time}, 
@@ -497,7 +497,7 @@ control MyIngress(inout headers hdr,
                 meta.control_ignore = true;
                 return;
             }
-            if(hdr.metadata.zero != 0) {
+            if(hdr.metadata.zero1 != 0 || hdr.metadata.zero2 != 0) {
                 meta.control_ignore = true;
                 return;
             }
@@ -597,7 +597,7 @@ control MyIngress(inout headers hdr,
         hdr.metadata.src_port = meta.id.src_port;
         hdr.metadata.dst_port = meta.id.dst_port;
         hdr.metadata.protocol = meta.id.protocol;
-        hdr.metadata.zero = 0;
+        hdr.metadata.zero1 = 0;
 
         hdr.metadata.switch_eport = send_update ? meta.reg_map.eport : 0;
         
@@ -607,7 +607,7 @@ control MyIngress(inout headers hdr,
         //hdr.metadata.is_to_in
         //hdr.metadata.is_to_out
         hdr.metadata.is_update = send_update ? (bit)meta.timeout : 0;
-        hdr.metadata.zero = 0;
+        hdr.metadata.zero2 = 0;
         hdr.metadata.version = send_update ? meta.version : 0;
         hdr.metadata.index = send_update ? meta.index : 0;
         hdr.metadata.nfv_time = 0;
@@ -842,7 +842,7 @@ control MyComputeChecksum(inout headers hdr, inout metadata meta) {
             hdr.metadata.src_port, 
             hdr.metadata.dst_port, 
             hdr.metadata.protocol,
-            hdr.metadata.zero,
+            hdr.metadata.zero1,
 
             hdr.metadata.switch_port,
 
@@ -851,7 +851,7 @@ control MyComputeChecksum(inout headers hdr, inout metadata meta) {
             hdr.metadata.is_to_in,
             hdr.metadata.is_to_out,
             hdr.metadata.is_update,
-            hdr.metadata.zero,
+            hdr.metadata.zero2,
 
             hdr.metadata.index,
             hdr.metadata.nfv_time}, 
