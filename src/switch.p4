@@ -883,6 +883,7 @@ control MyComputeChecksum(inout headers hdr, in metadata meta) {
     Checksum<bit<16>>(HashAlgorithm_t.CSUM16) csum16;
 
     apply {
+        /*
         if(meta.update_metadata) {
             hdr.metadata.checksum = csum16.update(
                 {hdr.metadata.src_addr, 
@@ -959,72 +960,6 @@ control MyComputeChecksum(inout headers hdr, in metadata meta) {
             if(checksum == 0) checksum = 0xffff;
             hdr.udp.checksum = (bit<16>)checksum;
         }
-        /*
-        update_checksum(meta.update_metadata, 
-            {hdr.metadata.primary_map.id.src_addr, 
-            hdr.metadata.primary_map.id.dst_addr, 
-            hdr.metadata.primary_map.id.src_port, 
-            hdr.metadata.primary_map.id.dst_port, 
-            hdr.metadata.primary_map.id.protocol,
-            hdr.metadata.primary_map.id.zero,
-            hdr.metadata.primary_map.eport,
-
-            hdr.metadata.secondary_map.id.src_addr, 
-            hdr.metadata.secondary_map.id.dst_addr, 
-            hdr.metadata.secondary_map.id.src_port, 
-            hdr.metadata.secondary_map.id.dst_port, 
-            hdr.metadata.secondary_map.id.protocol,
-            hdr.metadata.secondary_map.id.zero,
-            hdr.metadata.secondary_map.eport,
-
-            hdr.metadata.is_to_in,
-            hdr.metadata.is_to_out,
-            hdr.metadata.is_update,
-            hdr.metadata.zero,
-
-            hdr.metadata.index,
-
-            hdr.metadata.sw_time,
-            hdr.metadata.nfv_time
-            },
-            hdr.metadata.checksum, HashAlgorithm.csum16);
-
-        update_checksum(meta.update_ip, 
-            {hdr.ipv4.version,
-            hdr.ipv4.ihl,
-            hdr.ipv4.unused1,
-            hdr.ipv4.total_length,
-            hdr.ipv4.unused2,
-            hdr.ipv4.ttl,
-            hdr.ipv4.protocol,
-            hdr.ipv4.src_addr,
-            hdr.ipv4.dst_addr},
-            hdr.ipv4.checksum, HashAlgorithm.csum16);
-        
-        update_checksum_with_payload(meta.update_tcp, 
-            {hdr.ipv4.src_addr, 
-            hdr.ipv4.dst_addr,
-            8w0,
-            hdr.ipv4.protocol,
-            meta.L4_length,
-
-            hdr.L4_header.tcp.src_port,
-            hdr.L4_header.tcp.dst_port,
-            hdr.L4_header.tcp.unused1,
-            hdr.L4_header.tcp.unused2}, 
-            hdr.L4_header.tcp.checksum, HashAlgorithm.csum16);
-
-        update_checksum_with_payload(meta.update_udp, 
-            {hdr.ipv4.src_addr, 
-            hdr.ipv4.dst_addr,
-            8w0,
-            hdr.ipv4.protocol,
-            meta.L4_length,
-
-            hdr.L4_header.udp.src_port,
-            hdr.L4_header.udp.dst_port,
-            hdr.L4_header.udp.unused}, 
-            hdr.L4_header.udp.checksum, HashAlgorithm.csum16);    
         */
     }
 }
