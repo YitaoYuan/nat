@@ -230,6 +230,11 @@ control MyMetadataInit(inout headers hdr, inout metadata meta) {
     apply {
         meta.valid_bits = 0;
         meta.valid_bits[3:3] = (bit)hdr.ethernet.isValid();
+        bit<4> tmp = (bit)hdr.ethernet.isValid() ++
+                            (bit)hdr.metadata.isValid() ++
+                            (bit)hdr.ipv4.isValid() ++
+                            (bit)(hdr.tcp.isValid()||hdr.udp.isValid());
+        meta.valid_bits = tmp;
         /*meta.valid_bits = ( (bit)hdr.ethernet.isValid() ++
                             (bit)hdr.metadata.isValid() ++
                             (bit)hdr.ipv4.isValid() ++
