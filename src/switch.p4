@@ -145,6 +145,10 @@ struct metadata {
     time_t          time;
     // register
     map_entry_t     reg_map;
+    bit<32>         reg_tmp3;
+    bit<32>         reg_tmp2;
+    bit<32>         reg_tmp1;
+    bit<32>         reg_tmp0;
 
     bool            timeout;
     bool            match;
@@ -364,82 +368,72 @@ control MyIngress(inout headers hdr,
     Register<index_t, bit<32>>(PORT_MAX - (bit<32>)PORT_MIN, 0) reverse_map;
 
     RegisterAction<bit<32>, bit<32>, bit<32>>(map3) reg_map3_read = {
-        void apply(inout bit<32> reg) {
-            meta.reg_map.id.src_addr = reg;
+        void apply(inout bit<32> reg, out bit<32> ret) {
+            ret = reg;
         }
     };
     RegisterAction<bit<32>, bit<32>, bit<32>>(map2) reg_map2_read = {
-        void apply(inout bit<32> reg) {
-            meta.reg_map.id.dst_addr = reg;
+        void apply(inout bit<32> reg, out bit<32> ret) {
+            ret = reg;
         }
     };
     RegisterAction<bit<32>, bit<32>, bit<32>>(map1) reg_map1_read = {
-        void apply(inout bit<32> reg) {
-            meta.reg_map.id.src_port = reg[31:16];
-            meta.reg_map.id.dst_port = reg[15:0];
+        void apply(inout bit<32> reg, out bit<32> ret) {
+            ret = reg;
         }
     };
     RegisterAction<bit<32>, bit<32>, bit<32>>(map0) reg_map0_read = {
-        void apply(inout bit<32> reg) {
-            meta.reg_map.id.protocol = reg[31:24];
-            meta.reg_map.id.zero = reg[23:16];
-            meta.reg_map.eport = reg[15:0];
+        void apply(inout bit<32> reg, out bit<32> ret) {
+            ret = reg;
         }
     };
     RegisterAction<bit<32>, bit<32>, bit<32>>(map3) reg_map3_swap = {
-        void apply(inout bit<32> reg) {
-            bit<32>tmp = meta.reg_map.id.src_addr;
-            meta.reg_map.id.src_addr = reg;
-            reg = tmp;
+        void apply(inout bit<32> reg, out bit<32> ret) {
+            ret = reg;
+            reg = meta.reg_tmp3;
         }
     };
     RegisterAction<bit<32>, bit<32>, bit<32>>(map2) reg_map2_swap = {
-        void apply(inout bit<32> reg) {
-            bit<32>tmp = meta.reg_map.id.dst_addr;
-            meta.reg_map.id.dst_addr = reg;
-            reg = tmp;
+        void apply(inout bit<32> reg, out bit<32> ret) {
+            ret = reg;
+            reg = meta.reg_tmp2;
         }
     };
     RegisterAction<bit<32>, bit<32>, bit<32>>(map1) reg_map1_swap = {
-        void apply(inout bit<32> reg) {
-            bit<32>tmp = meta.reg_map.id.src_port ++ meta.reg_map.id.dst_port;
-            meta.reg_map.id.src_port = reg[31:16];
-            meta.reg_map.id.dst_port = reg[15:0];
-            reg = tmp;
+        void apply(inout bit<32> reg, out bit<32> ret) {
+            ret = reg;
+            reg = meta.reg_tmp1;
         }
     };
     RegisterAction<bit<32>, bit<32>, bit<32>>(map0) reg_map0_swap = {
-        void apply(inout bit<32> reg) {
-            bit<32>tmp = meta.reg_map.id.protocol ++ meta.reg_map.id.zero ++ meta.reg_map.eport;
-            meta.reg_map.id.protocol = reg[31:24];
-            meta.reg_map.id.zero = reg[23:16];
-            meta.reg_map.eport = reg[15:0];
-            reg = tmp;
+        void apply(inout bit<32> reg, out bit<32> ret) {
+            ret = reg;
+            reg = meta.reg_tmp0;
         }
     };
 
-    RegisterAction<time_t, bit<32>, time_t>(primary_time) reg_update_time_on_match = {
-        void apply(inout time_t reg_time) {
+    RegisterAction<time_t, bit<32>, bool>(primary_time) reg_update_time_on_match = {
+        void apply(inout time_t reg_time, out bool ret) {
             // "meta.time - FOREVER_TIMEOUT > AGING_TIME_US" is always true
             if(meta.time - reg_time > AGING_TIME_US) {
                 reg_time = FOREVER_TIMEOUT;
-                meta.timeout = true;
+                ret = true;
             }
             else {
                 reg_time = meta.time;
-                meta.timeout = false;
+                ret = false;
             }
         }
     };
 
-    RegisterAction<time_t, bit<32>, time_t>(primary_time) reg_update_time_on_mismatch = {
-        void apply(inout time_t reg_time) {
+    RegisterAction<time_t, bit<32>, bool>(primary_time) reg_update_time_on_mismatch = {
+        void apply(inout time_t reg_time, out bool ret) {
             if(meta.time - reg_time > AGING_TIME_US) {
                 reg_time = FOREVER_TIMEOUT;
-                meta.timeout = true;
+                ret = true;
             }
             else {
-                meta.timeout = false;
+                ret = false;
             }
         }
     };
@@ -451,15 +445,15 @@ control MyIngress(inout headers hdr,
     };
 
     RegisterAction<version_t, bit<32>, version_t>(version) reg_read_version = {
-        void apply(inout version_t reg_version) {
-            meta.version = reg_version;
+        void apply(inout version_t reg_version, out version_t ret) {
+            ret = reg_version;
         }
     };
 
     RegisterAction<version_t, bit<32>, version_t>(version) reg_update_version = {
-        void apply(inout version_t reg_version) {
+        void apply(inout version_t reg_version, out version_t ret) {
             version_t version_diff = meta.version - reg_version;
-            meta.version_diff = version_diff;
+            ret = version_diff;
             if(version_diff == 1) {
                 reg_version = meta.version;
             }
@@ -467,8 +461,8 @@ control MyIngress(inout headers hdr,
     };
 
     RegisterAction<index_t, bit<32>, index_t>(reverse_map) reg_reverse_map_read = {
-        void apply(inout index_t reg_index) {
-            //meta.index = reg_index;
+        void apply(inout index_t reg_index, out index_t ret) {
+            ret = reg_index;
         }
     };
 
@@ -485,25 +479,48 @@ control MyIngress(inout headers hdr,
     };
 
     action map_read(index_t index) {
-        reg_map3_read.execute((bit<32>)index);
-        reg_map2_read.execute((bit<32>)index);
-        reg_map1_read.execute((bit<32>)index);
-        reg_map0_read.execute((bit<32>)index);
+        meta.reg_tmp3 = reg_map3_read.execute((bit<32>)index);
+        meta.reg_tmp2 = reg_map2_read.execute((bit<32>)index);
+        meta.reg_tmp1 = reg_map1_read.execute((bit<32>)index);
+        meta.reg_tmp0 = reg_map0_read.execute((bit<32>)index);
+        meta.reg_map = {
+            {meta.reg_tmp3,
+            meta.reg_tmp2,
+            meta.reg_tmp1[31:16],
+            meta.reg_tmp1[15:0],
+            meta.reg_tmp0[31:24],
+            meta.reg_tmp0[23:16]},
+            meta.reg_tmp0[15:0]
+        };
     }
 
     action map_swap(index_t index) {
-        reg_map3_swap.execute((bit<32>)index);
-        reg_map2_swap.execute((bit<32>)index);
-        reg_map1_swap.execute((bit<32>)index);
-        reg_map0_swap.execute((bit<32>)index);
+        meta.reg_tmp3 = meta.reg_map.id.src_addr;
+        meta.reg_tmp2 = meta.reg_map.id.dst_addr;
+        meta.reg_tmp1 = meta.reg_map.id.src_port ++ meta.reg_map.id.dst_port;
+        meta.reg_tmp0 = meta.reg_map.id.protocol ++ meta.reg_map.id.zero ++ meta.reg_map.eport;
+
+        meta.reg_tmp3 = reg_map3_swap.execute((bit<32>)index);
+        meta.reg_tmp2 = reg_map2_swap.execute((bit<32>)index);
+        meta.reg_tmp1 = reg_map1_swap.execute((bit<32>)index);
+        meta.reg_tmp0 = reg_map0_swap.execute((bit<32>)index);
+        meta.reg_map = {
+            {meta.reg_tmp3,
+            meta.reg_tmp2,
+            meta.reg_tmp1[31:16],
+            meta.reg_tmp1[15:0],
+            meta.reg_tmp0[31:24],
+            meta.reg_tmp0[23:16]},
+            meta.reg_tmp0[15:0]
+        };
     }
 
     action update_time_on_match(index_t index) {
-        reg_update_time_on_match.execute((bit<32>)index);
+        meta.timeout = reg_update_time_on_match.execute((bit<32>)index);
     }
 
     action update_time_on_mismatch(index_t index) {
-        reg_update_time_on_mismatch.execute((bit<32>)index);
+        meta.timeout = reg_update_time_on_mismatch.execute((bit<32>)index);
     }
 
     action write_time(index_t index) {
@@ -511,15 +528,15 @@ control MyIngress(inout headers hdr,
     }
 
     action read_version(index_t index) {
-        reg_read_version.execute((bit<32>)index);
+        meta.version = reg_read_version.execute((bit<32>)index);
     }
 
     action update_version(index_t index) {
-        reg_update_version.execute((bit<32>)index);
+        meta.version_diff = reg_update_version.execute((bit<32>)index);
     }
 
     action reverse_map_read(index_t index) {
-        reg_reverse_map_read.execute((bit<32>)index);
+        meta.index = reg_reverse_map_read.execute((bit<32>)index);
     }
 
     action reverse_map_write(index_t index) {
