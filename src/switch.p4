@@ -468,7 +468,7 @@ control MyIngress(inout headers hdr,
 
     RegisterAction<index_t, bit<32>, index_t>(reverse_map) reg_reverse_map_read = {
         void apply(inout index_t reg_index) {
-            meta.index = reg_index;
+            //meta.index = reg_index;
         }
     };
 
