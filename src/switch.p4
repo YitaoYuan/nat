@@ -353,24 +353,68 @@ control MyIngress(inout headers hdr,
         size = 16;
         default_action = drop();
     }
-
-    Register<map_entry_t, bit<32>>((bit<32>)SWITCH_PORT_NUM, 0) map;
+    @pragma stateful_field_slice
+    Register<bit<32>, bit<32>>((bit<32>)SWITCH_PORT_NUM, 0) map3;
+    Register<bit<32>, bit<32>>((bit<32>)SWITCH_PORT_NUM, 0) map2;
+    Register<bit<32>, bit<32>>((bit<32>)SWITCH_PORT_NUM, 0) map1;
+    Register<bit<32>, bit<32>>((bit<32>)SWITCH_PORT_NUM, 0) map0;
     // TODO：time后续可以改成8bit
     Register<time_t, bit<32>>((bit<32>)SWITCH_PORT_NUM, FOREVER_TIMEOUT) primary_time;
     Register<version_t, bit<32>>((bit<32>)SWITCH_PORT_NUM, 0) version;
     Register<index_t, bit<32>>(PORT_MAX - (bit<32>)PORT_MIN, 0) reverse_map;
 
-    RegisterAction<map_entry_t, bit<32>, map_entry_t>(map) reg_map_read = {
-        void apply(inout map_entry_t reg_map) {
-            meta.reg_map = reg_map;
+    RegisterAction<bit<32>, bit<32>, bit<32>>(map3) reg_map3_read = {
+        void apply(inout bit<32> reg) {
+            meta.reg_map.id.src_addr = reg;
         }
     };
-
-    RegisterAction<map_entry_t, bit<32>, map_entry_t>(map) reg_map_swap = {
-        void apply(inout map_entry_t reg_map) {
-            map_entry_t tmp = meta.reg_map;
-            meta.reg_map = reg_map;
-            reg_map = tmp;
+    RegisterAction<bit<32>, bit<32>, bit<32>>(map2) reg_map2_read = {
+        void apply(inout bit<32> reg) {
+            meta.reg_map.id.dst_addr = reg;
+        }
+    };
+    RegisterAction<bit<32>, bit<32>, bit<32>>(map1) reg_map1_read = {
+        void apply(inout bit<32> reg) {
+            meta.reg_map.id.src_port = reg[31:16];
+            meta.reg_map.id.dst_port = reg[15:0];
+        }
+    };
+    RegisterAction<bit<32>, bit<32>, bit<32>>(map0) reg_map0_read = {
+        void apply(inout bit<32> reg) {
+            meta.reg_map.id.protocol = reg[31:24];
+            meta.reg_map.id.zero = reg[23:16];
+            meta.reg_map.eport = reg[15:0];
+        }
+    };
+    RegisterAction<bit<32>, bit<32>, bit<32>>(map3) reg_map3_swap = {
+        void apply(inout bit<32> reg) {
+            bit<32>tmp = meta.reg_map.id.src_addr;
+            meta.reg_map.id.src_addr = reg;
+            reg = tmp;
+        }
+    };
+    RegisterAction<bit<32>, bit<32>, bit<32>>(map2) reg_map2_swap = {
+        void apply(inout bit<32> reg) {
+            bit<32>tmp = meta.reg_map.id.dst_addr;
+            meta.reg_map.id.dst_addr = reg;
+            reg = tmp;
+        }
+    };
+    RegisterAction<bit<32>, bit<32>, bit<32>>(map1) reg_map1_swap = {
+        void apply(inout bit<32> reg) {
+            bit<32>tmp = meta.reg_map.id.src_port ++ meta.reg_map.id.dst_port;
+            meta.reg_map.id.src_port = reg[31:16];
+            meta.reg_map.id.dst_port = reg[15:0];
+            reg = tmp;
+        }
+    };
+    RegisterAction<bit<32>, bit<32>, bit<32>>(map0) reg_map0_swap = {
+        void apply(inout bit<32> reg) {
+            bit<32>tmp = meta.reg_map.id.protocol ++ meta.reg_map.id.zero ++ meta.reg_map.eport;
+            meta.reg_map.id.protocol = reg[31:24];
+            meta.reg_map.id.zero = reg[23:16];
+            meta.reg_map.eport = reg[15:0];
+            reg = tmp;
         }
     };
 
@@ -441,11 +485,17 @@ control MyIngress(inout headers hdr,
     };
 
     action map_read(index_t index) {
-        reg_map_read.execute((bit<32>)index);
+        reg_map3_read.execute((bit<32>)index);
+        reg_map2_read.execute((bit<32>)index);
+        reg_map1_read.execute((bit<32>)index);
+        reg_map0_read.execute((bit<32>)index);
     }
 
     action map_swap(index_t index) {
-        reg_map_swap.execute((bit<32>)index);
+        reg_map3_swap.execute((bit<32>)index);
+        reg_map2_swap.execute((bit<32>)index);
+        reg_map1_swap.execute((bit<32>)index);
+        reg_map0_swap.execute((bit<32>)index);
     }
 
     action update_time_on_match(index_t index) {
