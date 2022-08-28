@@ -165,7 +165,10 @@ struct metadata {
     bit<16>         L4_checksum_partial;
 
 
-    bool            tmp_bool;
+    bool            tmp_bool1;
+    bool            tmp_bool2;
+    bool            tmp_bool3;
+    bool            tmp_bool4;
 }
 
 
@@ -382,14 +385,18 @@ control get_transition_type(
                 meta.control_ignore = true;
                 return;
             }
-            
-            if(LAN_ADDR_START <= hdr.ipv4.src_addr && hdr.ipv4.src_addr < LAN_ADDR_END
-                && !(LAN_ADDR_START <= hdr.ipv4.dst_addr && hdr.ipv4.dst_addr < LAN_ADDR_END)) {
+            // src IN LAN
+            meta.tmp_bool1 = LAN_ADDR_START <= hdr.ipv4.src_addr;
+            meta.tmp_bool1 = meta.tmp_bool1 && hdr.ipv4.src_addr < LAN_ADDR_END;
+            // dst OUT LAN
+            meta.tmp_bool2 = hdr.ipv4.dst_addr < LAN_ADDR_START;
+            meta.tmp_bool2 = meta.tmp_bool2 || LAN_ADDR_END <= hdr.ipv4.dst_addr;
+
+            if(meta.tmp_bool1 && meta.tmp_bool2) {
                 hdr.metadata.is_to_in = 0;
                 hdr.metadata.is_to_out = 1;
             }
-            else if(!(LAN_ADDR_START <= hdr.ipv4.src_addr && hdr.ipv4.src_addr < LAN_ADDR_END) 
-                && hdr.ipv4.dst_addr == NAT_ADDR) {
+            else if(!meta.tmp_bool1 && hdr.ipv4.dst_addr == NAT_ADDR) {
                 hdr.metadata.is_to_in = 1;
                 hdr.metadata.is_to_out = 0;
             }
