@@ -124,10 +124,16 @@ struct map_entry_t {// size == 16
     port_t          eport;
 }
 
+enum bit<2> hdr_type_t {
+    normal,
+    with_meta,
+    meta_only,
+}
+
 struct metadata {
     /* parser -> ingress */
-    bool            parse_error;
-    bool            is_tcp;
+    bit<2>          hdr_type;// 
+    bit             is_tcp;
     bit<16>         L4_length;
     bit<4>          valid_bits;
 
@@ -188,17 +194,32 @@ parser ParserI(packet_in packet,
     state parse_ethernet {
         packet.extract(hdr.ethernet);
         transition select(hdr.ethernet.ether_type) {
-            TYPE_IPV4: parse_ipv4;
+            TYPE_IPV4: mark_normal;
             TYPE_METADATA: parse_metadata;
         }
+    }
+
+    state mark_normal {
+        meta.hdr_type = hdr_type_t.normal;
+        transition parse_ipv4;
     }
 
     state parse_metadata {
         packet.extract(hdr.metadata);
         transition select(hdr.metadata.is_update) {
-            1w0: parse_ipv4;
-            1w1: accept;
+            1w0: mark_with_meta;
+            1w1: mark_meta_only;
         }
+    }
+
+    state mark_with_meta {
+        meta.hdr_type = hdr_type_t.with_meta;
+        transition parse_ipv4;
+    }
+
+    state mark_meta_only {
+        meta.hdr_type = hdr_type_t.meta_only;
+        transition accept;
     }
 
     state parse_ipv4 {
@@ -211,12 +232,13 @@ parser ParserI(packet_in packet,
 
     state parse_tcp {
         packet.extract(hdr.tcp);
-        meta.is_tcp = true;
+        meta.is_tcp = 1;
         transition accept;
     }
 
     state parse_udp {
         packet.extract(hdr.udp);
+        meta.is_tcp = 0;
         transition accept;
     }
 }
