@@ -335,7 +335,67 @@ control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
 /*************************************************************************
 **************  I N G R E S S   P R O C E S S I N G   *******************
 *************************************************************************/
+control get_transition_type(
+        inout headers hdr,
+        inout metadata meta,
+        in ingress_intrinsic_metadata_t ig_intr_md) {
+    apply {
+        meta.control_ignore = false;
 
+        if(ig_intr_md.ingress_port == NFV_PORT) {
+            meta.is_from_nfv = true;
+
+            if(meta.valid_bits != 4w0b1100 && meta.valid_bits != 4w0b1111) {
+                meta.control_ignore = true;
+                return;
+            }
+
+            if(hdr.ethernet.src_addr != NFV_INNER_MAC || 
+                hdr.ethernet.dst_addr != SWITCH_INNER_MAC ||
+                hdr.ethernet.ether_type != TYPE_METADATA) {// parser didn't check this
+                meta.control_ignore = true;
+                return;
+            }
+            if(hdr.metadata.zero1 != 0 || hdr.metadata.zero2 != 0) {
+                meta.control_ignore = true;
+                return;
+            }
+            if( (bit<2>)hdr.metadata.is_to_in +
+                (bit<2>)hdr.metadata.is_to_out +
+                (bit<2>)hdr.metadata.is_update != 1) {
+                meta.control_ignore = true;
+                return;
+            } 
+            bit<5> bits = meta.valid_bits ++ hdr.metadata.is_update;
+            if(bits != 5w0b1100_1 && bits != 5w0b1111_0) {
+                meta.control_ignore = true;
+                return;
+            }
+        }
+        else {
+            if(meta.valid_bits != 4w0b1011) {
+                meta.control_ignore = true;
+                return;
+            }
+            meta.is_from_nfv = false;
+
+            if(LAN_ADDR_START <= hdr.ipv4.src_addr && hdr.ipv4.src_addr < LAN_ADDR_END
+                && !(LAN_ADDR_START <= hdr.ipv4.dst_addr && hdr.ipv4.dst_addr < LAN_ADDR_END)) {
+                hdr.metadata.is_to_in = 0;
+                hdr.metadata.is_to_out = 1;
+            }
+            else if(!(LAN_ADDR_START <= hdr.ipv4.src_addr && hdr.ipv4.src_addr < LAN_ADDR_END) 
+                && hdr.ipv4.dst_addr == NAT_ADDR) {
+                hdr.metadata.is_to_in = 1;
+                hdr.metadata.is_to_out = 0;
+            }
+            else {
+                meta.control_ignore = true;
+                return;
+            }
+        }
+    }
+}
 
 control IngressP(
         inout headers hdr,
@@ -558,64 +618,6 @@ control IngressP(
         reg_reverse_map_clear.execute((bit<32>)index);
     }
 
-    action get_transition_type() {
-
-        meta.control_ignore = false;
-
-        if(ig_intr_md.ingress_port == NFV_PORT) {
-            meta.is_from_nfv = true;
-
-            if(meta.valid_bits != 4w0b1100 && meta.valid_bits != 4w0b1111) {
-                meta.control_ignore = true;
-                return;
-            }
-
-            if(hdr.ethernet.src_addr != NFV_INNER_MAC || 
-                hdr.ethernet.dst_addr != SWITCH_INNER_MAC ||
-                hdr.ethernet.ether_type != TYPE_METADATA) {// parser didn't check this
-                meta.control_ignore = true;
-                return;
-            }
-            if(hdr.metadata.zero1 != 0 || hdr.metadata.zero2 != 0) {
-                meta.control_ignore = true;
-                return;
-            }
-            if( (bit<2>)hdr.metadata.is_to_in +
-                (bit<2>)hdr.metadata.is_to_out +
-                (bit<2>)hdr.metadata.is_update != 1) {
-                meta.control_ignore = true;
-                return;
-            } 
-            bit<5> bits = meta.valid_bits ++ hdr.metadata.is_update;
-            if(bits != 5w0b1100_1 && bits != 5w0b1111_0) {
-                meta.control_ignore = true;
-                return;
-            }
-        }
-        else {
-            if(meta.valid_bits != 4w0b1011) {
-                meta.control_ignore = true;
-                return;
-            }
-            meta.is_from_nfv = false;
-
-            if(LAN_ADDR_START <= hdr.ipv4.src_addr && hdr.ipv4.src_addr < LAN_ADDR_END
-                && !(LAN_ADDR_START <= hdr.ipv4.dst_addr && hdr.ipv4.dst_addr < LAN_ADDR_END)) {
-                hdr.metadata.is_to_in = 0;
-                hdr.metadata.is_to_out = 1;
-            }
-            else if(!(LAN_ADDR_START <= hdr.ipv4.src_addr && hdr.ipv4.src_addr < LAN_ADDR_END) 
-                && hdr.ipv4.dst_addr == NAT_ADDR) {
-                hdr.metadata.is_to_in = 1;
-                hdr.metadata.is_to_out = 0;
-            }
-            else {
-                meta.control_ignore = true;
-                return;
-            }
-        }
-    }
-
     action get_id() {
         if(meta.is_tcp) {
             meta.id.src_port = hdr.tcp.src_port;
@@ -728,7 +730,7 @@ control IngressP(
         if(!hdr.metadata.isValid()) hdr.metadata.setValid();
 
         get_time();
-        get_transition_type();
+        get_transition_type.apply(hdr, meta, ig_intr_md);
         /*
         if(meta.control_ignore) {
             drop();
