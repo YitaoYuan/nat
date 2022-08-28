@@ -714,7 +714,36 @@ control IngressP(
         
         ig_intr_tm_md.bypass_egress = true;
 
-        MyMetadataInit.apply(hdr, meta);
+
+
+
+
+        if(hdr.ethernet.isValid()) meta.valid_bits[3:3] = 1;
+        if(hdr.metadata.isValid()) meta.valid_bits[2:2] = 1;
+        if(hdr.ipv4.isValid()) meta.valid_bits[1:1] = 1;
+        if(hdr.tcp.isValid() || hdr.udp.isValid()) meta.valid_bits[0:0] = 1;
+        
+
+        if(meta.valid_bits != 4w0b1100 && meta.valid_bits != 4w0b1111 && meta.valid_bits != 4w0b1011)
+            meta.parse_error = meta.tmp_bool1;
+
+        /* 编译器有bug，不能像下面这样写
+        meta.valid_bits = ( (bit)hdr.ethernet.isValid() ++
+                            (bit)hdr.metadata.isValid() ++
+                            (bit)hdr.ipv4.isValid() ++
+                            (bit)(hdr.tcp.isValid()||hdr.udp.isValid()) );*/
+
+        
+        meta.verify_metadata = hdr.metadata.isValid() ? true : false;
+        meta.verify_ip = hdr.ipv4.isValid() ? true : false;
+        meta.verify_tcp = hdr.tcp.isValid() ? true : false;
+        meta.verify_udp = (hdr.udp.isValid() ? true : false) && hdr.udp.checksum != 0;
+        meta.is_tcp = hdr.tcp.isValid() ? true : false;
+        if(hdr.ipv4.isValid()) meta.L4_length = hdr.ipv4.total_length - (bit<16>)hdr.ipv4.ihl * 4;
+
+
+
+        //MyMetadataInit.apply(hdr, meta);
 
         if(meta.parse_error || ig_intr_prsr_md.parser_err != 0) {
             drop();
