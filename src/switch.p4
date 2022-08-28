@@ -386,7 +386,8 @@ control get_transition_type(
                 return;
             }
             // src IN LAN
-            if(LAN_ADDR_START[31:16] < hdr.ipv4.src_addr[31:16]) {
+            //bit<>
+            if(LAN_ADDR_START[15:0] < hdr.ipv4.src_addr[15:0]) {
                 meta.tmp_bool1 = true;
             } 
             else if(LAN_ADDR_START[31:16] == hdr.ipv4.src_addr[31:16]) {
