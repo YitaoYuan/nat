@@ -224,6 +224,8 @@ parser ParserI(packet_in packet,
 
     state parse_ipv4 {
         packet.extract(hdr.ipv4);
+        meta.L4_length = (bit<16>)(hdr.ipv4.ihl << 2);
+        meta.L4_length = hdr.ipv4.total_length - meta.L4_length;
         transition select(hdr.ipv4.protocol ++ hdr.ipv4.ihl) {
             TCP_PROTOCOL ++ 4w5: parse_tcp;
             UDP_PROTOCOL ++ 4w5: parse_udp;
@@ -250,6 +252,7 @@ control MyMetadataInit(inout headers hdr, inout metadata meta) {
                             (bit)hdr.metadata.isValid() ++
                             (bit)hdr.ipv4.isValid() ++
                             (bit)(hdr.tcp.isValid()||hdr.udp.isValid()) );*/
+        /*
         if(hdr.ethernet.isValid()) meta.valid_bits[3:3] = 1;
         if(hdr.metadata.isValid()) meta.valid_bits[2:2] = 1;
         if(hdr.ipv4.isValid()) meta.valid_bits[1:1] = 1;
@@ -270,6 +273,7 @@ control MyMetadataInit(inout headers hdr, inout metadata meta) {
             meta.L4_length = (bit<16>)(hdr.ipv4.ihl << 2);
             meta.L4_length = hdr.ipv4.total_length - meta.L4_length;
         }
+        */
     }
 }
 
@@ -762,7 +766,7 @@ control IngressP(
 
         MyMetadataInit.apply(hdr, meta);
 
-        if(meta.parse_error || ig_intr_prsr_md.parser_err != 0) {
+        if(/*meta.parse_error || */ig_intr_prsr_md.parser_err != 0) {
             drop();
             return;
         }
