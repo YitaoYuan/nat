@@ -383,10 +383,10 @@ control get_transition_type(
             meta.is_from_nfv = false;
 
         if(meta.is_from_nfv) {
-            if(meta.valid_bits != 4w0b1100 && meta.valid_bits != 4w0b1111) {
+            /*if(meta.valid_bits != 4w0b1100 && meta.valid_bits != 4w0b1111) {
                 meta.control_ignore = true;
                 return;
-            }
+            }*/
             bit<112>cmp1 = hdr.ethernet.src_addr ++ hdr.ethernet.dst_addr ++ hdr.ethernet.ether_type;
             bit<112>cmp2 = NFV_INNER_MAC ++ SWITCH_INNER_MAC ++ TYPE_METADATA;
             if(cmp1[31:0] != cmp2[31:0]) 
@@ -398,15 +398,15 @@ control get_transition_type(
             if(cmp1[111:96] != cmp2[111:96])
                 meta.control_ignore = true;
 
-            if(hdr.metadata.zero1 != 0 || hdr.metadata.zero2 != 0) {
+            /*if(hdr.metadata.zero1 != 0 || hdr.metadata.zero2 != 0) {
                 meta.control_ignore = true;
-            }
+            }*/
             bit<3> direction = hdr.metadata.is_to_in ++ hdr.metadata.is_to_out ++ hdr.metadata.is_update;
             if(direction != 0b100 && direction != 0b010 && direction != 0b001) {
                 meta.control_ignore = true;
             } 
-            bit<5> update_valid_bits = meta.valid_bits ++ hdr.metadata.is_update;
-            if(update_valid_bits != 5w0b1100_1 && update_valid_bits != 5w0b1111_0) {
+            bit<3> update_valid_bits = meta.hdr_type ++ hdr.metadata.is_update;
+            if(update_valid_bits != hdr_type_t.meta_only ++ 1w1 && update_valid_bits != hdr_type_t.with_meta ++ 1w0) {
                 meta.control_ignore = true;
             }
         }
