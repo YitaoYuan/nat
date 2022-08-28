@@ -132,7 +132,7 @@ enum bit<2> hdr_type_t {
 
 struct metadata {
     /* parser -> ingress */
-    bit<2>          hdr_type;// 
+    hdr_type_t      hdr_type;// 
     bit             is_tcp;
     bit<16>         L4_length;
     bit<4>          valid_bits;
