@@ -366,13 +366,12 @@ control get_transition_type(
             if(hdr.metadata.zero1 != 0 || hdr.metadata.zero2 != 0) {
                 meta.control_ignore = true;
             }
-            if( (bit<2>)hdr.metadata.is_to_in +
-                (bit<2>)hdr.metadata.is_to_out +
-                (bit<2>)hdr.metadata.is_update != 1) {
+            bit<3> direction = hdr.metadata.is_to_in ++ hdr.metadata.is_to_out ++ hdr.metadata.is_update;
+            if(direction != 0b100 && direction != 0b010 && direction != 0b001) {
                 meta.control_ignore = true;
             } 
-            bit<5> bits = meta.valid_bits ++ hdr.metadata.is_update;
-            if(bits != 5w0b1100_1 && bits != 5w0b1111_0) {
+            bit<5> update_valid_bits = meta.valid_bits ++ hdr.metadata.is_update;
+            if(update_valid_bits != 5w0b1100_1 && update_valid_bits != 5w0b1111_0) {
                 meta.control_ignore = true;
             }
         }
