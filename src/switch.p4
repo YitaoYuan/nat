@@ -715,7 +715,7 @@ control IngressP(
             drop();
             return;
         }
-        /*
+        
         MyVerifyChecksum.apply(hdr, meta);
 
         if(meta.checksum_error) {
@@ -729,7 +729,7 @@ control IngressP(
 
         get_time();
         get_transition_type();
-
+        /*
         if(meta.control_ignore) {
             drop();
             return;
