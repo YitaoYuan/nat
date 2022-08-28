@@ -239,8 +239,8 @@ control MyMetadataInit(inout headers hdr, inout metadata meta) {
         else meta.is_tcp = false;
 
         if(hdr.ipv4.isValid()) {
-            meta.L4_length = - (bit<16>)hdr.ipv4.ihl * 4;
-            meta.L4_length = meta.L4_length + hdr.ipv4.total_length;
+            meta.L4_length = (bit<16>)hdr.ipv4.ihl * 4;
+            meta.L4_length = hdr.ipv4.total_length - meta.L4_length;
         }
     }
 }
