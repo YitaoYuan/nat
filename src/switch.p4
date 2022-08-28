@@ -406,8 +406,10 @@ control get_transition_type(
                 meta.control_ignore = true;
             } 
             bit<3> update_valid_bits = (bit<2>)meta.hdr_type ++ hdr.metadata.is_update;
-            if(update_valid_bits != (bit<2>)(hdr_type_t.meta_only) ++ 1w1 && 
-                update_valid_bits != (bit<2>)(hdr_type_t.with_meta) ++ 1w0) {
+            bit<2> type_meta_only = (bit<2>)hdr_type_t.meta_only;
+            bit<2> type_with_meta = (bit<2>)hdr_type_t.with_meta;
+            if(update_valid_bits != type_meta_only ++ 1w1 && 
+                update_valid_bits != type_with_meta ++ 1w0) {
                 meta.control_ignore = true;
             }
         }
