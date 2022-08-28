@@ -163,6 +163,9 @@ struct metadata {
 
     /* ingress checksum -> egress checksum */
     bit<16>         L4_checksum_partial;
+
+
+    bool            tmp_bool;
 }
 
 
@@ -350,35 +353,34 @@ control get_transition_type(
                 return;
             }
 
-            if(hdr.ethernet.src_addr != NFV_INNER_MAC || 
-                hdr.ethernet.dst_addr != SWITCH_INNER_MAC ||
-                hdr.ethernet.ether_type != TYPE_METADATA) {// parser didn't check this
+            if(hdr.ethernet.src_addr != NFV_INNER_MAC) 
                 meta.control_ignore = true;
-                return;
-            }
+            if(hdr.ethernet.dst_addr != SWITCH_INNER_MAC)
+                meta.control_ignore = true;
+            if(hdr.ethernet.ether_type != TYPE_METADATA)
+                meta.control_ignore = true;
+
             if(hdr.metadata.zero1 != 0 || hdr.metadata.zero2 != 0) {
                 meta.control_ignore = true;
-                return;
             }
             if( (bit<2>)hdr.metadata.is_to_in +
                 (bit<2>)hdr.metadata.is_to_out +
                 (bit<2>)hdr.metadata.is_update != 1) {
                 meta.control_ignore = true;
-                return;
             } 
             bit<5> bits = meta.valid_bits ++ hdr.metadata.is_update;
             if(bits != 5w0b1100_1 && bits != 5w0b1111_0) {
                 meta.control_ignore = true;
-                return;
             }
         }
         else {
+            meta.is_from_nfv = false;
+
             if(meta.valid_bits != 4w0b1011) {
                 meta.control_ignore = true;
                 return;
             }
-            meta.is_from_nfv = false;
-
+            
             if(LAN_ADDR_START <= hdr.ipv4.src_addr && hdr.ipv4.src_addr < LAN_ADDR_END
                 && !(LAN_ADDR_START <= hdr.ipv4.dst_addr && hdr.ipv4.dst_addr < LAN_ADDR_END)) {
                 hdr.metadata.is_to_in = 0;
@@ -391,7 +393,6 @@ control get_transition_type(
             }
             else {
                 meta.control_ignore = true;
-                return;
             }
         }
     }
