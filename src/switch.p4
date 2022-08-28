@@ -724,7 +724,7 @@ control IngressP(
         }
         //if(hdr.ethernet.ether_type != TYPE_IPV4) {drop(); return;}
         // TODO
-        // 还需要判断下DSTMAC是不是本地端口的MAC
+        // 还需要判断下DSTMAC是不是本地端口的MAC 
         if(!hdr.metadata.isValid()) hdr.metadata.setValid();
 
         get_time();
