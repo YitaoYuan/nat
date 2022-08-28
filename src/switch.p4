@@ -163,10 +163,6 @@ struct metadata {
 
     /* ingress checksum -> egress checksum */
     bit<16>         L4_checksum_partial;
-
-    /* tmp */
-    bool            tmp_bool1;
-    bool            tmp_bool2;
 }
 
 
@@ -220,7 +216,7 @@ parser ParserI(packet_in packet,
 
 control MyMetadataInit(inout headers hdr, inout metadata meta) {
     apply {
-        /* 不能像下面这样写
+        /* 不能像下面这样写, 只支持single stage
         meta.valid_bits = ( (bit)hdr.ethernet.isValid() ++
                             (bit)hdr.metadata.isValid() ++
                             (bit)hdr.ipv4.isValid() ++
@@ -232,14 +228,17 @@ control MyMetadataInit(inout headers hdr, inout metadata meta) {
         
 
         if(meta.valid_bits != 4w0b1100 && meta.valid_bits != 4w0b1111 && meta.valid_bits != 4w0b1011)
-            meta.parse_error = meta.tmp_bool1;
+            meta.parse_error = true;
+        else
+            meta.parse_error = false;
 
         // 也不能这样写：hdr.metadata.isValid() ? true : false;
         if(hdr.tcp.isValid()) meta.is_tcp = true;
         else meta.is_tcp = false;
 
         if(hdr.ipv4.isValid()) {
-            meta.L4_length = (bit<16>)hdr.ipv4.ihl * 4;
+            // MD, hdr.ipv4.ihl * 4 都不能自动变成 << 2
+            meta.L4_length = (bit<16>)(hdr.ipv4.ihl << 2);
             meta.L4_length = hdr.ipv4.total_length - meta.L4_length;
         }
     }
