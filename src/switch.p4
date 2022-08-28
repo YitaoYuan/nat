@@ -352,12 +352,15 @@ control get_transition_type(
                 meta.control_ignore = true;
                 return;
             }
-
-            if(hdr.ethernet.src_addr != NFV_INNER_MAC) 
+            bit<112>cmp1 = hdr.ethernet.src_addr ++ hdr.ethernet.dst_addr ++ hdr.ethernet.ether_type;
+            bit<112>cmp2 = NFV_INNER_MAC ++ SWITCH_INNER_MAC ++ TYPE_METADATA;
+            if(cmp1[31:0] != cmp2[31:0]) 
                 meta.control_ignore = true;
-            if(hdr.ethernet.dst_addr != SWITCH_INNER_MAC)
+            if(cmp1[63:32] != cmp2[63:32])
                 meta.control_ignore = true;
-            if(hdr.ethernet.ether_type != TYPE_METADATA)
+            if(cmp1[95:64] != cmp2[95:64])
+                meta.control_ignore = true;
+            if(cmp1[111:96] != cmp2[111:96])
                 meta.control_ignore = true;
 
             if(hdr.metadata.zero1 != 0 || hdr.metadata.zero2 != 0) {
