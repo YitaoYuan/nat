@@ -386,11 +386,17 @@ control get_transition_type(
                 return;
             }
             // src IN LAN
-            meta.tmp_bool1 = LAN_ADDR_START <= hdr.ipv4.src_addr;
-            meta.tmp_bool1 = meta.tmp_bool1 && hdr.ipv4.src_addr < LAN_ADDR_END;
+            if(LAN_ADDR_START <= hdr.ipv4.src_addr) meta.tmp_bool1 = true;
+            else meta.tmp_bool1 = false;
+            if(meta.tmp_bool1 && hdr.ipv4.src_addr < LAN_ADDR_END) meta.tmp_bool1 = true;
+            else meta.tmp_bool1 = false;
+            
             // dst OUT LAN
-            meta.tmp_bool2 = hdr.ipv4.dst_addr < LAN_ADDR_START;
-            meta.tmp_bool2 = meta.tmp_bool2 || LAN_ADDR_END <= hdr.ipv4.dst_addr;
+            if(hdr.ipv4.dst_addr < LAN_ADDR_START) meta.tmp_bool2 = true;
+            else meta.tmp_bool2 = false;
+
+            if(meta.tmp_bool2 || LAN_ADDR_END <= hdr.ipv4.dst_addr) meta.tmp_bool2 = true;
+            else meta.tmp_bool2 = false;
 
             if(meta.tmp_bool1 && meta.tmp_bool2) {
                 hdr.metadata.is_to_in = 0;
