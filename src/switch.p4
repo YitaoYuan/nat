@@ -382,8 +382,7 @@ control get_transition_type(
             }
         }
         else {
-            meta.is_from_nfv = false;
-
+            /*
             if(meta.valid_bits != 4w0b1011) {
                 meta.control_ignore = true;
                 return;
@@ -393,13 +392,13 @@ control get_transition_type(
             if(LAN_ADDR_START < hdr.ipv4.src_addr) {
                 meta.tmp_bool1 = true;
             } 
-            /*else if(LAN_ADDR_START[31:16] == hdr.ipv4.src_addr[31:16]) {
+            else if(LAN_ADDR_START[31:16] == hdr.ipv4.src_addr[31:16]) {
                 if(LAN_ADDR_START[15:0] <= hdr.ipv4.src_addr[15:0])
                     meta.tmp_bool1 = true;
                 else 
                     meta.tmp_bool1 = false;
             }
-            else meta.tmp_bool1 = false;*/
+            else meta.tmp_bool1 = false;
             
             // dst OUT LAN
             if(hdr.ipv4.dst_addr < LAN_ADDR_START) meta.tmp_bool2 = true;
@@ -419,6 +418,7 @@ control get_transition_type(
             else {
                 meta.control_ignore = true;
             }
+            */
         }
     }
 }
