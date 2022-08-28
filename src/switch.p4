@@ -350,7 +350,10 @@ control get_transition_type(
 
         if(ig_intr_md.ingress_port == NFV_PORT) {
             meta.is_from_nfv = true;
+        else 
+            meta.is_from_nfv = false;
 
+        if(meta.is_from_nfv) {
             if(meta.valid_bits != 4w0b1100 && meta.valid_bits != 4w0b1111) {
                 meta.control_ignore = true;
                 return;
@@ -387,7 +390,7 @@ control get_transition_type(
             }
             // src IN LAN
             //bit<>
-            if((bit<16>)LAN_ADDR_START <= (bit<16>)hdr.ipv4.src_addr) {
+            if((bit<16>)LAN_ADDR_START < (bit<16>)hdr.ipv4.src_addr) {
                 meta.tmp_bool1 = true;
             } 
             /*else if(LAN_ADDR_START[31:16] == hdr.ipv4.src_addr[31:16]) {
