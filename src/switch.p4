@@ -135,7 +135,6 @@ struct metadata {
     hdr_type_t      hdr_type;// 
     bit             is_tcp;
     bit<16>         L4_length;
-    bit<4>          valid_bits;
 
     /* checksum -> ingress */
     bool            checksum_error;
@@ -224,8 +223,8 @@ parser ParserI(packet_in packet,
 
     state parse_ipv4 {
         packet.extract(hdr.ipv4);
-        meta.L4_length = (bit<16>)(hdr.ipv4.ihl << 2);
-        meta.L4_length = hdr.ipv4.total_length - meta.L4_length;
+        //meta.L4_length = (bit<16>)(hdr.ipv4.ihl << 2);
+        //meta.L4_length = hdr.ipv4.total_length - meta.L4_length;
         transition select(hdr.ipv4.protocol ++ hdr.ipv4.ihl) {
             TCP_PROTOCOL ++ 4w5: parse_tcp;
             UDP_PROTOCOL ++ 4w5: parse_udp;
@@ -274,6 +273,8 @@ control MyMetadataInit(inout headers hdr, inout metadata meta) {
             meta.L4_length = hdr.ipv4.total_length - meta.L4_length;
         }
         */
+        meta.L4_length = (bit<16>)(hdr.ipv4.ihl << 2);
+        meta.L4_length = hdr.ipv4.total_length - meta.L4_length;
     }
 }
 
@@ -282,6 +283,7 @@ control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
     //Checksum<bit<16>>(HashAlgorithm_t.CSUM16) csum16;
 
     apply {
+        meta.checksum_error = false;
         /*
         bit<16> checksum;
         meta.checksum_error = false;
