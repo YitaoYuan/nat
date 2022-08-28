@@ -125,7 +125,7 @@ struct map_entry_t {// size == 16
 }
 
 enum bit<2> hdr_type_t {
-    norma = 1,
+    normal = 1,
     with_meta = 2,
     meta_only = 3
 }
