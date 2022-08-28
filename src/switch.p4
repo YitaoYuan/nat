@@ -405,8 +405,9 @@ control get_transition_type(
             if(direction != 0b100 && direction != 0b010 && direction != 0b001) {
                 meta.control_ignore = true;
             } 
-            bit<3> update_valid_bits = meta.hdr_type ++ hdr.metadata.is_update;
-            if(update_valid_bits != hdr_type_t.meta_only ++ 1w1 && update_valid_bits != hdr_type_t.with_meta ++ 1w0) {
+            bit<3> update_valid_bits = (bit<2>)meta.hdr_type ++ hdr.metadata.is_update;
+            if(update_valid_bits != (bit<2>)hdr_type_t.meta_only ++ 1w1 && 
+                update_valid_bits != (bit<2>)hdr_type_t.with_meta ++ 1w0) {
                 meta.control_ignore = true;
             }
         }
