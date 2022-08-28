@@ -211,6 +211,7 @@ parser ParserI(packet_in packet,
 
     state parse_tcp {
         packet.extract(hdr.tcp);
+        meta.is_tcp = true;
         transition accept;
     }
 
