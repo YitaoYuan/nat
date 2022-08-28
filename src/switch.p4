@@ -167,6 +167,10 @@ struct metadata {
 
     /* ingress checksum -> egress checksum */
     bit<16>         L4_checksum_partial;
+
+    /* tmp */
+    bool            tmp_bool1;
+    bool            tmp_bool2;
 }
 
 
@@ -220,27 +224,23 @@ parser ParserI(packet_in packet,
 
 control MyMetadataInit(inout headers hdr, inout metadata meta) {
     apply {
-        bit<4> valid_bits = 0;
+        if(hdr.ethernet.isValid()) meta.valid_bits[3:3] = 1;
+        if(hdr.metadata.isValid()) meta.valid_bits[2:2] = 1;
+        if(hdr.ipv4.isValid()) meta.valid_bits[1:1] = 1;
+        if(hdr.tcp.isValid() || hdr.udp.isValid()) meta.valid_bits[0:0] = 1;
         
-        if(hdr.ethernet.isValid()) valid_bits[3:3] = 1;
-        if(hdr.metadata.isValid()) valid_bits[2:2] = 1;
-        if(hdr.ipv4.isValid()) valid_bits[1:1] = 1;
-        if(hdr.tcp.isValid() || hdr.udp.isValid()) valid_bits[0:0] = 1;
-        
-        meta.valid_bits = valid_bits;
+        meta.tmp_bool1 = meta.valid_bits != 4w0b1100;
+        meta.tmp_bool2 = meta.valid_bits != 4w0b1111;
+        meta.tmp_bool1 = meta.tmp_bool1 && meta.tmp_bool2;
+        meta.tmp_bool2 = meta.valid_bits != 4w0b1011;
+        meta.tmp_bool1 = meta.tmp_bool1 && meta.tmp_bool2;
+        meta.parse_error = meta.tmp_bool1;
+
         /* 编译器有bug，不能像下面这样写
         meta.valid_bits = ( (bit)hdr.ethernet.isValid() ++
                             (bit)hdr.metadata.isValid() ++
                             (bit)hdr.ipv4.isValid() ++
                             (bit)(hdr.tcp.isValid()||hdr.udp.isValid()) );*/
-
-        
-        bool tmp_bool1 = valid_bits != 4w0b1100;
-        bool tmp_bool2 = valid_bits != 4w0b1111;
-        tmp_bool1 = tmp_bool1 && tmp_bool2;
-        tmp_bool2 = valid_bits != 4w0b1011;
-        tmp_bool1 = tmp_bool1 && tmp_bool2;
-        meta.parse_error = tmp_bool1;
 
         
         meta.verify_metadata = hdr.metadata.isValid() ? true : false;
