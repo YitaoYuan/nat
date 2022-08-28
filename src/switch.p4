@@ -377,12 +377,10 @@ control get_transition_type(
     apply {
         meta.control_ignore = false;
 
-        if(ig_intr_md.ingress_port == NFV_PORT) 
-            meta.is_from_nfv = true;
-        else 
-            meta.is_from_nfv = false;
+        if(ig_intr_md.ingress_port == NFV_PORT) {
 
-        if(meta.is_from_nfv) {
+            meta.is_from_nfv = true;
+
             /*if(meta.valid_bits != 4w0b1100 && meta.valid_bits != 4w0b1111) {
                 meta.control_ignore = true;
                 return;
@@ -414,14 +412,23 @@ control get_transition_type(
             }
         }
         else {
+            meta.is_from_nfv = false;
             /*
             if(meta.valid_bits != 4w0b1011) {
                 meta.control_ignore = true;
                 return;
             }
+            */
+            if(meta.hdr_type != hdr_type_t.normal) 
+                meta.control_ignore = true;
             // src IN LAN
             //bit<>
-            if(LAN_ADDR_START < hdr.ipv4.src_addr) {
+
+            // TODO 改这个else，或许可以直接用一个table来记录哪个是LAN port
+            // 那个是WAN port，这样比较省事
+
+
+            if(LAN_ADDR_START[31:16] < hdr.ipv4.src_addr[31:16]) {
                 meta.tmp_bool1 = true;
             } 
             else if(LAN_ADDR_START[31:16] == hdr.ipv4.src_addr[31:16]) {
@@ -450,7 +457,7 @@ control get_transition_type(
             else {
                 meta.control_ignore = true;
             }
-            */
+            
         }
     }
 }
