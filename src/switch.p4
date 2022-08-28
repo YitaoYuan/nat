@@ -127,10 +127,6 @@ struct map_entry_t {// size == 16
 struct metadata {
     /* parser -> ingress */
     bool            parse_error;
-    bool            verify_metadata;
-    bool            verify_ip;
-    bool            verify_tcp;
-    bool            verify_udp;
     bool            is_tcp;
     bit<16>         L4_length;
     bit<4>          valid_bits;
@@ -224,6 +220,11 @@ parser ParserI(packet_in packet,
 
 control MyMetadataInit(inout headers hdr, inout metadata meta) {
     apply {
+        /* 不能像下面这样写
+        meta.valid_bits = ( (bit)hdr.ethernet.isValid() ++
+                            (bit)hdr.metadata.isValid() ++
+                            (bit)hdr.ipv4.isValid() ++
+                            (bit)(hdr.tcp.isValid()||hdr.udp.isValid()) );*/
         if(hdr.ethernet.isValid()) meta.valid_bits[3:3] = 1;
         if(hdr.metadata.isValid()) meta.valid_bits[2:2] = 1;
         if(hdr.ipv4.isValid()) meta.valid_bits[1:1] = 1;
@@ -233,19 +234,10 @@ control MyMetadataInit(inout headers hdr, inout metadata meta) {
         if(meta.valid_bits != 4w0b1100 && meta.valid_bits != 4w0b1111 && meta.valid_bits != 4w0b1011)
             meta.parse_error = meta.tmp_bool1;
 
-        /* 编译器有bug，不能像下面这样写
-        meta.valid_bits = ( (bit)hdr.ethernet.isValid() ++
-                            (bit)hdr.metadata.isValid() ++
-                            (bit)hdr.ipv4.isValid() ++
-                            (bit)(hdr.tcp.isValid()||hdr.udp.isValid()) );*/
+        // 也不能这样写：hdr.metadata.isValid() ? true : false;
+        if(hdr.tcp.isValid()) meta.is_tcp = true;
+        else meta.is_tcp = false;
 
-        if(hdr.metadata.isValid()) meta.verify_metadata = true;
-        else meta.verify_metadata = false;
-
-        meta.verify_ip = hdr.ipv4.isValid() ? true : false;
-        meta.verify_tcp = hdr.tcp.isValid() ? true : false;
-        meta.verify_udp = (hdr.udp.isValid() ? true : false) && hdr.udp.checksum != 0;
-        meta.is_tcp = hdr.tcp.isValid() ? true : false;
         if(hdr.ipv4.isValid()) meta.L4_length = hdr.ipv4.total_length - (bit<16>)hdr.ipv4.ihl * 4;
     }
 }
@@ -258,7 +250,7 @@ control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
         /*
         bit<16> checksum;
         meta.checksum_error = false;
-        if(meta.verify_metadata) {
+        if(hdr.metadata.isValid()) {
             checksum = csum16.update(
                 {hdr.metadata.src_addr, 
                 hdr.metadata.dst_addr, 
@@ -285,7 +277,7 @@ control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
             }
         }
         
-        if(meta.verify_ip) {
+        if(hdr.ipv4.isValid()) {
             checksum = csum16.update(
                 {hdr.ipv4.version,
                 hdr.ipv4.ihl,
@@ -303,7 +295,7 @@ control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
             }
         }
         
-        if(meta.verify_tcp) {
+        if(hdr.tcp.isValid()) {
             checksum = csum16.update(
                 {hdr.ipv4.src_addr, 
                 hdr.ipv4.dst_addr,
@@ -319,7 +311,7 @@ control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
             meta.L4_checksum_partial = checksum;
         }
         
-        if(meta.verify_udp) {
+        if(hdr.udp.isValid() && hdr.udp.checksum != 0) {
             checksum = csum16.update(
                 {hdr.ipv4.src_addr, 
                 hdr.ipv4.dst_addr,
