@@ -348,7 +348,7 @@ control get_transition_type(
     apply {
         meta.control_ignore = false;
 
-        if(ig_intr_md.ingress_port == NFV_PORT) {
+        if(ig_intr_md.ingress_port == NFV_PORT) 
             meta.is_from_nfv = true;
         else 
             meta.is_from_nfv = false;
