@@ -672,7 +672,7 @@ control IngressP(
     }
 
     action get_id() {
-        if(meta.is_tcp) {
+        if((bool)meta.is_tcp) {
             meta.id.src_port = hdr.tcp.src_port;
             meta.id.dst_port = hdr.tcp.dst_port;
         }
@@ -700,7 +700,7 @@ control IngressP(
 
     action translate() {
         hdr.ipv4.src_addr = NAT_ADDR;
-        if(meta.is_tcp) 
+        if((bool)meta.is_tcp) 
             hdr.tcp.src_port = meta.reg_map.eport;
         else
             hdr.udp.src_port = meta.reg_map.eport;
@@ -708,7 +708,7 @@ control IngressP(
     
     action reverse_translate() {
         hdr.ipv4.dst_addr = meta.reg_map.id.src_addr;
-        if(meta.is_tcp)
+        if((bool)meta.is_tcp)
             hdr.tcp.dst_port = meta.reg_map.id.src_port;
         else
             hdr.udp.dst_port = meta.reg_map.id.src_port;
