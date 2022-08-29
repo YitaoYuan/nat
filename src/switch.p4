@@ -25,9 +25,9 @@ const bit<16> TYPE_IPV4 = 0x800;
 const bit<16> TYPE_METADATA = SHARED_TYPE_METADATA;
 
 //you can change these by tables to support dynamic & multiple LAN address allocation
-const ip4_addr_t LAN_ADDR_START = SHARED_LAN_ADDR_START;// 192.168.11.0
-const ip4_addr_t LAN_ADDR_END = SHARED_LAN_ADDR_END;// not included
-const ip4_addr_t NAT_ADDR = SHARED_NAT_ADDR;// 10.1.1.1
+const ip4_addr_t LAN_ADDR = SHARED_LAN_ADDR;// 192.168.0.0
+const ip4_addr_t LAN_ADDR_MASK = SHARED_LAN_ASHARED_LAN_ADDR_MASKDDR_END;// /24
+const ip4_addr_t NAT_ADDR = SHARED_NAT_ADDR;// 192.168.2.254
 
 const port_t PORT_MIN = SHARED_PORT_MIN;
 const bit<32> PORT_MAX = SHARED_PORT_MAX;//65536;// not included
@@ -133,7 +133,7 @@ enum bit<2> hdr_type_t {
 struct metadata {
     /* parser -> ingress */
     hdr_type_t      hdr_type;// 
-    bit             is_tcp;
+    bool             is_tcp;
     bit<16>         L4_length;
 
     /* checksum -> ingress */
@@ -421,30 +421,21 @@ control get_transition_type(
             */
             if(meta.hdr_type != hdr_type_t.normal) 
                 meta.control_ignore = true;
-            // src IN LAN
-            //bit<>
 
             // TODO 改这个else，或许可以直接用一个table来记录哪个是LAN port
             // 那个是WAN port，这样比较省事
 
-
-            if(LAN_ADDR_START[31:16] < hdr.ipv4.src_addr[31:16]) {
+            // src IN LAN
+            if((hdr.ipv4.src_addr & LAN_ADDR_MASK) == LAN_ADDR)
                 meta.tmp_bool1 = true;
-            } 
-            else if(LAN_ADDR_START[31:16] == hdr.ipv4.src_addr[31:16]) {
-                if(LAN_ADDR_START[15:0] <= hdr.ipv4.src_addr[15:0])
-                    meta.tmp_bool1 = true;
-                else 
-                    meta.tmp_bool1 = false;
-            }
-            else meta.tmp_bool1 = false;
+            else 
+                meta.tmp_bool1 = false;
             
             // dst OUT LAN
-            if(hdr.ipv4.dst_addr < LAN_ADDR_START) meta.tmp_bool2 = true;
-            else meta.tmp_bool2 = false;
-
-            if(meta.tmp_bool2 || LAN_ADDR_END <= hdr.ipv4.dst_addr) meta.tmp_bool2 = true;
-            else meta.tmp_bool2 = false;
+            if((hdr.ipv4.src_addr & LAN_ADDR_MASK) == LAN_ADDR) 
+                meta.tmp_bool2 = false;
+            else 
+                meta.tmp_bool2 = true;
 
             if(meta.tmp_bool1 && meta.tmp_bool2) {
                 hdr.metadata.is_to_in = 0;
