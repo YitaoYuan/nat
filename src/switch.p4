@@ -26,7 +26,7 @@ const bit<16> TYPE_METADATA = SHARED_TYPE_METADATA;
 
 //you can change these by tables to support dynamic & multiple LAN address allocation
 const ip4_addr_t LAN_ADDR = SHARED_LAN_ADDR;// 192.168.0.0
-const ip4_addr_t LAN_ADDR_MASK = SHARED_LAN_ASHARED_LAN_ADDR_MASKDDR_END;// /24
+const ip4_addr_t LAN_ADDR_MASK = SHARED_LAN_ADDR_MASK;// /24
 const ip4_addr_t NAT_ADDR = SHARED_NAT_ADDR;// 192.168.2.254
 
 const port_t PORT_MIN = SHARED_PORT_MIN;
@@ -133,14 +133,22 @@ enum bit<2> hdr_type_t {
 struct metadata {
     /* parser -> ingress */
     hdr_type_t      hdr_type;// 
-    bool             is_tcp;
+    bool            is_tcp;
     bit<16>         L4_length;
 
-    /* checksum -> ingress */
-    bool            checksum_error;
+    bool            metadata_checksum_correct;
+    bool            ipv4_checksum_correct;
+    bit<16>         L4_neg_partial_checksum;
+    
 
     /* ingress */
     bool            control_ignore;
+    bool            control_ignore0;
+    bool            control_ignore1;
+    bool            control_ignore2;
+    bool            control_ignore3;
+    bool            control_ignore4;
+
     bool            is_from_nfv;
 
     // packet info
@@ -174,6 +182,15 @@ struct metadata {
     bool            tmp_bool2;
     bool            tmp_bool3;
     bool            tmp_bool4;
+
+    bit             tmp_bit1;
+    bit             tmp_bit2;
+
+    bit<32>         tmp_u32_1;
+    bit<32>         tmp_u32_2;
+    bit<32>         tmp_u32_3;
+
+    bit<16>         tmp_u16_1;
 }
 
 
@@ -186,7 +203,26 @@ parser ParserI(packet_in packet,
                out metadata meta,
                out ingress_intrinsic_metadata_t ig_intr_md) {
 
+    Checksum<bit<16>>(HashAlgorithm_t.CSUM16) metadata_csum;
+    Checksum<bit<16>>(HashAlgorithm_t.CSUM16) ipv4_csum;
+    Checksum<bit<16>>(HashAlgorithm_t.CSUM16) L4_csum;
+
     state start {
+        packet.extract(ig_intr_md);
+        transition parse_port_metadata;
+    }
+
+
+    state parse_port_metadata {
+        //packet.extract(ig_md.port_md);
+        //packet.extract(meta);
+        packet.advance(64);
+#if __TARGET_TOFINO__ == 2
+	// We need to advance another 128 bits since t2na metadata
+    	// is of 192 bits in total and my_port_metadata_t only 
+	// consumes 64 bits
+        packet.advance(128);
+#endif
         transition parse_ethernet;
     }
 
@@ -205,6 +241,8 @@ parser ParserI(packet_in packet,
 
     state parse_metadata {
         packet.extract(hdr.metadata);
+        metadata_csum.add(hdr.metadata);
+        meta.metadata_checksum_correct = metadata_csum.verify();
         transition select(hdr.metadata.is_update) {
             1w0: mark_with_meta;
             1w1: mark_meta_only;
@@ -223,8 +261,9 @@ parser ParserI(packet_in packet,
 
     state parse_ipv4 {
         packet.extract(hdr.ipv4);
-        //meta.L4_length = (bit<16>)(hdr.ipv4.ihl << 2);
-        //meta.L4_length = hdr.ipv4.total_length - meta.L4_length;
+        ipv4_csum.add(hdr.ipv4);
+        meta.ipv4_checksum_correct = ipv4_csum.verify();
+        L4_csum.subtract({hdr.ipv4.src_addr, hdr.ipv4.dst_addr, 8w0, hdr.ipv4.protocol, hdr.ipv4.total_length});
         transition select(hdr.ipv4.protocol ++ hdr.ipv4.ihl) {
             TCP_PROTOCOL ++ 4w5: parse_tcp;
             UDP_PROTOCOL ++ 4w5: parse_udp;
@@ -233,136 +272,18 @@ parser ParserI(packet_in packet,
 
     state parse_tcp {
         packet.extract(hdr.tcp);
-        meta.is_tcp = 1;
+        L4_csum.subtract({hdr.tcp.src_port, hdr.tcp.dst_port, hdr.tcp.unused1, hdr.tcp.unused2});
+        meta.L4_neg_partial_checksum = L4_csum.get();
+        meta.is_tcp = true;
         transition accept;
     }
 
     state parse_udp {
         packet.extract(hdr.udp);
-        meta.is_tcp = 0;
+        L4_csum.subtract({hdr.udp.src_port, hdr.udp.dst_port, hdr.udp.unused});
+        meta.L4_neg_partial_checksum = L4_csum.get();
+        meta.is_tcp = false;
         transition accept;
-    }
-}
-
-control MyMetadataInit(inout headers hdr, inout metadata meta) {
-    apply {
-        /* 不能像下面这样写, 只支持single stage
-        meta.valid_bits = ( (bit)hdr.ethernet.isValid() ++
-                            (bit)hdr.metadata.isValid() ++
-                            (bit)hdr.ipv4.isValid() ++
-                            (bit)(hdr.tcp.isValid()||hdr.udp.isValid()) );*/
-        /*
-        if(hdr.ethernet.isValid()) meta.valid_bits[3:3] = 1;
-        if(hdr.metadata.isValid()) meta.valid_bits[2:2] = 1;
-        if(hdr.ipv4.isValid()) meta.valid_bits[1:1] = 1;
-        if(hdr.tcp.isValid() || hdr.udp.isValid()) meta.valid_bits[0:0] = 1;
-        
-
-        if(meta.valid_bits != 4w0b1100 && meta.valid_bits != 4w0b1111 && meta.valid_bits != 4w0b1011)
-            meta.parse_error = true;
-        else
-            meta.parse_error = false;
-
-        // 也不能这样写：hdr.metadata.isValid() ? true : false;
-        if(hdr.tcp.isValid()) meta.is_tcp = true;
-        else meta.is_tcp = false;
-
-        if(hdr.ipv4.isValid()) {
-            // MD, hdr.ipv4.ihl * 4 都不能自动变成 << 2
-            meta.L4_length = (bit<16>)(hdr.ipv4.ihl << 2);
-            meta.L4_length = hdr.ipv4.total_length - meta.L4_length;
-        }
-        */
-        meta.L4_length = (bit<16>)(hdr.ipv4.ihl << 2);
-        meta.L4_length = hdr.ipv4.total_length - meta.L4_length;
-    }
-}
-
-control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
-    
-    //Checksum<bit<16>>(HashAlgorithm_t.CSUM16) csum16;
-
-    apply {
-        meta.checksum_error = false;
-        /*
-        bit<16> checksum;
-        meta.checksum_error = false;
-        if(hdr.metadata.isValid()) {
-            checksum = csum16.update(
-                {hdr.metadata.src_addr, 
-                hdr.metadata.dst_addr, 
-                hdr.metadata.src_port, 
-                hdr.metadata.dst_port, 
-                hdr.metadata.protocol,
-                hdr.metadata.zero1,
-
-                hdr.metadata.switch_port,
-
-                hdr.metadata.version,
-
-                hdr.metadata.is_to_in,
-                hdr.metadata.is_to_out,
-                hdr.metadata.is_update,
-                hdr.metadata.zero2,
-
-                hdr.metadata.index,
-                hdr.metadata.nfv_time}
-            );
-            if(checksum != hdr.metadata.checksum) {
-                meta.checksum_error = true;
-                return;
-            }
-        }
-        
-        if(hdr.ipv4.isValid()) {
-            checksum = csum16.update(
-                {hdr.ipv4.version,
-                hdr.ipv4.ihl,
-                hdr.ipv4.unused1,
-                hdr.ipv4.total_length,
-                hdr.ipv4.unused2,
-                hdr.ipv4.ttl,
-                hdr.ipv4.protocol,
-                hdr.ipv4.src_addr,
-                hdr.ipv4.dst_addr}
-            );
-            if(checksum != hdr.ipv4.checksum) {
-                meta.checksum_error = true;
-                return;
-            }
-        }
-        
-        if(hdr.tcp.isValid()) {
-            checksum = csum16.update(
-                {hdr.ipv4.src_addr, 
-                hdr.ipv4.dst_addr,
-                8w0,
-                hdr.ipv4.protocol,
-                meta.L4_length,
-
-                hdr.tcp.src_port,
-                hdr.tcp.dst_port,
-                hdr.tcp.unused1,
-                hdr.tcp.unused2}
-            );
-            meta.L4_checksum_partial = checksum;
-        }
-        
-        if(hdr.udp.isValid() && hdr.udp.checksum != 0) {
-            checksum = csum16.update(
-                {hdr.ipv4.src_addr, 
-                hdr.ipv4.dst_addr,
-                8w0,
-                hdr.ipv4.protocol,
-                meta.L4_length,
-
-                hdr.udp.src_port,
-                hdr.udp.dst_port,
-                hdr.udp.unused}
-            );
-            meta.L4_checksum_partial = checksum;
-        }
-        */
     }
 }
 
@@ -375,56 +296,39 @@ control get_transition_type(
         inout metadata meta,
         in ingress_intrinsic_metadata_t ig_intr_md) {
     apply {
-        meta.control_ignore = false;
-
         if(ig_intr_md.ingress_port == NFV_PORT) {
 
             meta.is_from_nfv = true;
 
-            /*if(meta.valid_bits != 4w0b1100 && meta.valid_bits != 4w0b1111) {
-                meta.control_ignore = true;
-                return;
-            }*/
-            bit<112>cmp1 = hdr.ethernet.src_addr ++ hdr.ethernet.dst_addr ++ hdr.ethernet.ether_type;
-            bit<112>cmp2 = NFV_INNER_MAC ++ SWITCH_INNER_MAC ++ TYPE_METADATA;
-            if(cmp1[31:0] != cmp2[31:0]) 
-                meta.control_ignore = true;
-            if(cmp1[63:32] != cmp2[63:32])
-                meta.control_ignore = true;
-            if(cmp1[95:64] != cmp2[95:64])
-                meta.control_ignore = true;
-            if(cmp1[111:96] != cmp2[111:96])
-                meta.control_ignore = true;
+            //我不想检查MAC地址，MAC地址无所谓了
+            if(hdr.ethernet.ether_type != TYPE_METADATA)
+                meta.control_ignore0 = true;
 
             /*if(hdr.metadata.zero1 != 0 || hdr.metadata.zero2 != 0) {
                 meta.control_ignore = true;
             }*/
             bit<3> direction = hdr.metadata.is_to_in ++ hdr.metadata.is_to_out ++ hdr.metadata.is_update;
             if(direction != 0b100 && direction != 0b010 && direction != 0b001) {
-                meta.control_ignore = true;
+                meta.control_ignore1 = true;
             } 
             bit<3> update_valid_bits = (bit<2>)meta.hdr_type ++ hdr.metadata.is_update;
             bit<2> type_meta_only = (bit<2>)hdr_type_t.meta_only;
             bit<2> type_with_meta = (bit<2>)hdr_type_t.with_meta;
             if(update_valid_bits != type_meta_only ++ 1w1 && 
                 update_valid_bits != type_with_meta ++ 1w0) {
-                meta.control_ignore = true;
+                meta.control_ignore2 = true;
             }
         }
         else {
             meta.is_from_nfv = false;
-            /*
-            if(meta.valid_bits != 4w0b1011) {
-                meta.control_ignore = true;
-                return;
-            }
-            */
+
             if(meta.hdr_type != hdr_type_t.normal) 
-                meta.control_ignore = true;
+                meta.control_ignore3 = true;
 
             // TODO 改这个else，或许可以直接用一个table来记录哪个是LAN port
             // 那个是WAN port，这样比较省事
 
+            //不知道为什么，control里用< <= > >=会出问题
             // src IN LAN
             if((hdr.ipv4.src_addr & LAN_ADDR_MASK) == LAN_ADDR)
                 meta.tmp_bool1 = true;
@@ -446,9 +350,8 @@ control get_transition_type(
                 hdr.metadata.is_to_out = 0;
             }
             else {
-                meta.control_ignore = true;
+                meta.control_ignore4 = true;
             }
-            
         }
     }
 }
@@ -485,61 +388,61 @@ control IngressP(
 
     Hash<index_t>(HashAlgorithm_t.CRC16) hashmap;
     
-    Register<bit<32>, bit<32>>((bit<32>)SWITCH_PORT_NUM, 0) map3;
-    Register<bit<32>, bit<32>>((bit<32>)SWITCH_PORT_NUM, 0) map2;
-    Register<bit<32>, bit<32>>((bit<32>)SWITCH_PORT_NUM, 0) map1;
-    Register<bit<32>, bit<32>>((bit<32>)SWITCH_PORT_NUM, 0) map0;
+    Register<bit<32>, index_t>((bit<32>)SWITCH_PORT_NUM, 0) map3;
+    Register<bit<32>, index_t>((bit<32>)SWITCH_PORT_NUM, 0) map2;
+    Register<bit<32>, index_t>((bit<32>)SWITCH_PORT_NUM, 0) map1;
+    Register<bit<32>, index_t>((bit<32>)SWITCH_PORT_NUM, 0) map0;
     // TODO：time后续可以改成8bit
-    Register<time_t, bit<32>>((bit<32>)SWITCH_PORT_NUM, FOREVER_TIMEOUT) primary_time;
-    Register<version_t, bit<32>>((bit<32>)SWITCH_PORT_NUM, 0) version;
-    Register<index_t, bit<32>>(PORT_MAX - (bit<32>)PORT_MIN, 0) reverse_map;
+    Register<time_t, index_t>((bit<32>)SWITCH_PORT_NUM, FOREVER_TIMEOUT) primary_time;
+    Register<version_t, index_t>((bit<32>)SWITCH_PORT_NUM, 0) version;
+    Register<index_t, index_t>(PORT_MAX - (bit<32>)PORT_MIN, 0) reverse_map;
 
-    RegisterAction<bit<32>, bit<32>, bit<32>>(map3) reg_map3_read = {
+    RegisterAction<bit<32>, index_t, bit<32>>(map3) reg_map3_read = {
         void apply(inout bit<32> reg, out bit<32> ret) {
             ret = reg;
         }
     };
-    RegisterAction<bit<32>, bit<32>, bit<32>>(map2) reg_map2_read = {
+    RegisterAction<bit<32>, index_t, bit<32>>(map2) reg_map2_read = {
         void apply(inout bit<32> reg, out bit<32> ret) {
             ret = reg;
         }
     };
-    RegisterAction<bit<32>, bit<32>, bit<32>>(map1) reg_map1_read = {
+    RegisterAction<bit<32>, index_t, bit<32>>(map1) reg_map1_read = {
         void apply(inout bit<32> reg, out bit<32> ret) {
             ret = reg;
         }
     };
-    RegisterAction<bit<32>, bit<32>, bit<32>>(map0) reg_map0_read = {
+    RegisterAction<bit<32>, index_t, bit<32>>(map0) reg_map0_read = {
         void apply(inout bit<32> reg, out bit<32> ret) {
             ret = reg;
         }
     };
-    RegisterAction<bit<32>, bit<32>, bit<32>>(map3) reg_map3_swap = {
+    RegisterAction<bit<32>, index_t, bit<32>>(map3) reg_map3_swap = {
         void apply(inout bit<32> reg, out bit<32> ret) {
             ret = reg;
             reg = meta.reg_tmp3;
         }
     };
-    RegisterAction<bit<32>, bit<32>, bit<32>>(map2) reg_map2_swap = {
+    RegisterAction<bit<32>, index_t, bit<32>>(map2) reg_map2_swap = {
         void apply(inout bit<32> reg, out bit<32> ret) {
             ret = reg;
             reg = meta.reg_tmp2;
         }
     };
-    RegisterAction<bit<32>, bit<32>, bit<32>>(map1) reg_map1_swap = {
+    RegisterAction<bit<32>, index_t, bit<32>>(map1) reg_map1_swap = {
         void apply(inout bit<32> reg, out bit<32> ret) {
             ret = reg;
             reg = meta.reg_tmp1;
         }
     };
-    RegisterAction<bit<32>, bit<32>, bit<32>>(map0) reg_map0_swap = {
+    RegisterAction<bit<32>, index_t, bit<32>>(map0) reg_map0_swap = {
         void apply(inout bit<32> reg, out bit<32> ret) {
             ret = reg;
             reg = meta.reg_tmp0;
         }
     };
 
-    RegisterAction<time_t, bit<32>, bool>(primary_time) reg_update_time_on_match = {
+    RegisterAction<time_t, index_t, bool>(primary_time) reg_update_time_on_match = {
         void apply(inout time_t reg_time, out bool ret) {
             // "meta.time - FOREVER_TIMEOUT > AGING_TIME_US" is always true
             if(meta.time - reg_time > AGING_TIME_US) {
@@ -553,7 +456,7 @@ control IngressP(
         }
     };
 
-    RegisterAction<time_t, bit<32>, bool>(primary_time) reg_update_time_on_mismatch = {
+    RegisterAction<time_t, index_t, bool>(primary_time) reg_update_time_on_mismatch = {
         void apply(inout time_t reg_time, out bool ret) {
             if(meta.time - reg_time > AGING_TIME_US) {
                 reg_time = FOREVER_TIMEOUT;
@@ -565,19 +468,19 @@ control IngressP(
         }
     };
 
-    RegisterAction<time_t, bit<32>, time_t>(primary_time) reg_write_time = {
+    RegisterAction<time_t, index_t, void>(primary_time) reg_write_time = {
         void apply(inout time_t reg_time) {
             reg_time = meta.time;
         }
     };
 
-    RegisterAction<version_t, bit<32>, version_t>(version) reg_read_version = {
+    RegisterAction<version_t, index_t, version_t>(version) reg_read_version = {
         void apply(inout version_t reg_version, out version_t ret) {
             ret = reg_version;
         }
     };
 
-    RegisterAction<version_t, bit<32>, version_t>(version) reg_update_version = {
+    RegisterAction<version_t, index_t, version_t>(version) reg_update_version = {
         void apply(inout version_t reg_version, out version_t ret) {
             version_t version_diff = meta.version - reg_version;
             ret = version_diff;
@@ -587,50 +490,55 @@ control IngressP(
         }
     };
 
-    RegisterAction<index_t, bit<32>, index_t>(reverse_map) reg_reverse_map_read = {
+    RegisterAction<index_t, index_t, index_t>(reverse_map) reg_reverse_map_read = {
         void apply(inout index_t reg_index, out index_t ret) {
             ret = reg_index;
         }
     };
 
-    RegisterAction<index_t, bit<32>, index_t>(reverse_map) reg_reverse_map_write = {
+    RegisterAction<index_t, index_t, void>(reverse_map) reg_reverse_map_write = {
         void apply(inout index_t reg_index) {
             reg_index = meta.index;
         }
     };
 
-    RegisterAction<index_t, bit<32>, index_t>(reverse_map) reg_reverse_map_clear = {
+    RegisterAction<index_t, index_t, void>(reverse_map) reg_reverse_map_clear = {
         void apply(inout index_t reg_index) {
             reg_index = 0;
         }
     };
 
-    action map_read(index_t index) {
-        meta.reg_tmp3 = reg_map3_read.execute((bit<32>)index);
-        meta.reg_tmp2 = reg_map2_read.execute((bit<32>)index);
-        meta.reg_tmp1 = reg_map1_read.execute((bit<32>)index);
-        meta.reg_tmp0 = reg_map0_read.execute((bit<32>)index);
-        meta.reg_map = {
-            {meta.reg_tmp3,
-            meta.reg_tmp2,
-            meta.reg_tmp1[31:16],
-            meta.reg_tmp1[15:0],
-            meta.reg_tmp0[31:24],
-            meta.reg_tmp0[23:16]},
-            meta.reg_tmp0[15:0]
-        };
+    action map3_read(in index_t index) {
+        meta.reg_map.id.src_addr = reg_map3_read.execute(index);
     }
 
-    action map_swap(index_t index) {
+    action map2_read(in index_t index) {
+        meta.reg_map.id.dst_addr = reg_map2_read.execute(index);
+    }
+
+    action map1_read(in index_t index) {
+        meta.reg_tmp1 = reg_map1_read.execute(index);
+        meta.reg_map.id.src_port = meta.reg_tmp1[31:16];
+        meta.reg_map.id.dst_port = meta.reg_tmp1[15:0];
+    }
+
+    action map0_read(in index_t index) {
+        meta.reg_tmp0 = reg_map0_read.execute(index);
+        meta.reg_map.id.protocol = meta.reg_tmp0[31:24];
+        meta.reg_map.id.zero = meta.reg_tmp0[23:16];
+        meta.reg_map.eport = meta.reg_tmp0[15:0];
+    }
+
+    action map_swap(in index_t index) {
         meta.reg_tmp3 = meta.reg_map.id.src_addr;
         meta.reg_tmp2 = meta.reg_map.id.dst_addr;
         meta.reg_tmp1 = meta.reg_map.id.src_port ++ meta.reg_map.id.dst_port;
         meta.reg_tmp0 = meta.reg_map.id.protocol ++ meta.reg_map.id.zero ++ meta.reg_map.eport;
 
-        meta.reg_tmp3 = reg_map3_swap.execute((bit<32>)index);
-        meta.reg_tmp2 = reg_map2_swap.execute((bit<32>)index);
-        meta.reg_tmp1 = reg_map1_swap.execute((bit<32>)index);
-        meta.reg_tmp0 = reg_map0_swap.execute((bit<32>)index);
+        meta.reg_tmp3 = reg_map3_swap.execute(index);
+        meta.reg_tmp2 = reg_map2_swap.execute(index);
+        meta.reg_tmp1 = reg_map1_swap.execute(index);
+        meta.reg_tmp0 = reg_map0_swap.execute(index);
         meta.reg_map = {
             {meta.reg_tmp3,
             meta.reg_tmp2,
@@ -642,51 +550,36 @@ control IngressP(
         };
     }
 
-    action update_time_on_match(index_t index) {
-        meta.timeout = reg_update_time_on_match.execute((bit<32>)index);
+    action update_time_on_match(in index_t index) {
+        meta.timeout = reg_update_time_on_match.execute(index);
     }
 
-    action update_time_on_mismatch(index_t index) {
-        meta.timeout = reg_update_time_on_mismatch.execute((bit<32>)index);
+    action update_time_on_mismatch(in index_t index) {
+        meta.timeout = reg_update_time_on_mismatch.execute(index);
     }
 
-    action write_time(index_t index) {
-        reg_write_time.execute((bit<32>)index);
+    action write_time(in index_t index) {
+        reg_write_time.execute(index);
     }
 
-    action read_version(index_t index) {
-        meta.version = reg_read_version.execute((bit<32>)index);
+    action read_version(in index_t index) {
+        meta.version = reg_read_version.execute(index);
     }
 
-    action update_version(index_t index) {
-        meta.version_diff = reg_update_version.execute((bit<32>)index);
+    action update_version(in index_t index) {
+        meta.version_diff = reg_update_version.execute(index);
     }
 
-    action reverse_map_read(index_t index) {
-        meta.index = reg_reverse_map_read.execute((bit<32>)index);
+    action reverse_map_read(in index_t index) {
+        meta.index = reg_reverse_map_read.execute(index);
     }
 
-    action reverse_map_write(index_t index) {
-        reg_reverse_map_write.execute((bit<32>)index);
+    action reverse_map_write(in index_t index) {
+        reg_reverse_map_write.execute(index);
     }
 
-    action reverse_map_clear(index_t index) {
-        reg_reverse_map_clear.execute((bit<32>)index);
-    }
-
-    action get_id() {
-        if((bool)meta.is_tcp) {
-            meta.id.src_port = hdr.tcp.src_port;
-            meta.id.dst_port = hdr.tcp.dst_port;
-        }
-        else {
-            meta.id.src_port = hdr.udp.src_port;
-            meta.id.dst_port = hdr.udp.dst_port;
-        }
-        meta.id.src_addr = hdr.ipv4.src_addr;
-        meta.id.dst_addr = hdr.ipv4.dst_addr;
-        meta.id.protocol = hdr.ipv4.protocol;
-        meta.id.zero = 0;
+    action reverse_map_clear(in index_t index) {
+        reg_reverse_map_clear.execute(index);
     }
 
     action get_index() {
@@ -703,21 +596,17 @@ control IngressP(
 
     action translate() {
         hdr.ipv4.src_addr = NAT_ADDR;
-        if((bool)meta.is_tcp) 
+        if(meta.is_tcp) 
             hdr.tcp.src_port = meta.reg_map.eport;
         else
             hdr.udp.src_port = meta.reg_map.eport;
     }
     
     action reverse_translate() {
-        hdr.ipv4.dst_addr = meta.reg_map.id.src_addr;
-        if((bool)meta.is_tcp)
-            hdr.tcp.dst_port = meta.reg_map.id.src_port;
-        else
-            hdr.udp.dst_port = meta.reg_map.id.src_port;
+        
     }
 
-    action set_metadata(bool send_update) {
+    action set_metadata(in bool send_update) {
         hdr.ethernet.ether_type = TYPE_METADATA;
 
         // Why p4c for tofino does not support "struct in header" ???
@@ -764,57 +653,76 @@ control IngressP(
     }
 
     apply {
-        
+        // bypass_egress
         ig_intr_tm_md.bypass_egress = true;
 
-        MyMetadataInit.apply(hdr, meta);
-
-        if(/*meta.parse_error || */ig_intr_prsr_md.parser_err != 0) {
+        // 检查parse和checksum
+        if(ig_intr_prsr_md.parser_err != 0 ||                               // parse error
+            (hdr.metadata.isValid() && !meta.metadata_checksum_correct) ||  // metadata checksum error
+            (hdr.ipv4.isValid() && !meta.ipv4_checksum_correct)) {          // ipv4 checksum error
             drop();
             return;
         }
         
-        MyVerifyChecksum.apply(hdr, meta);
-
-        if(meta.checksum_error) {
-            drop();
-            return;
-        }
-        //if(hdr.ethernet.ether_type != TYPE_IPV4) {drop(); return;}
-        // TODO
-        // 还需要判断下DSTMAC是不是本地端口的MAC 
-        if(!hdr.metadata.isValid()) hdr.metadata.setValid();
-
-        get_time();
+        // 检查包的合法性
+        hdr.metadata.setValid();
         get_transition_type.apply(hdr, meta, ig_intr_md);
-        /*
-        if(meta.control_ignore) {
+        
+        if(meta.control_ignore0 || meta.control_ignore1 || meta.control_ignore2 || meta.control_ignore3 || meta.control_ignore4) {
             drop();
             return;
         }
+
+        // 初始化
+        // time
+        get_time();
+
+        // L4_length
+        if(hdr.ipv4.isValid()) {
+            meta.L4_length = (bit<16>)(hdr.ipv4.ihl << 2);
+            meta.L4_length = hdr.ipv4.total_length - meta.L4_length;
+        }
+        
+        // id
+        if(meta.is_tcp) {
+            meta.id.src_port = hdr.tcp.src_port;
+            meta.id.dst_port = hdr.tcp.dst_port;
+        }
+        else {
+            meta.id.src_port = hdr.udp.src_port;
+            meta.id.dst_port = hdr.udp.dst_port;
+        }
+        meta.id.src_addr = hdr.ipv4.src_addr;
+        meta.id.dst_addr = hdr.ipv4.dst_addr;
+        meta.id.protocol = hdr.ipv4.protocol;
+        meta.id.zero = 0;
+
 
         meta.apply_dst = false;
 
         if(!meta.is_from_nfv && hdr.metadata.is_to_in == 1) {
-            port_t eport = meta.is_tcp? hdr.tcp.dst_port : hdr.udp.dst_port;
-            port_t src_port = meta.is_tcp? hdr.tcp.src_port : hdr.udp.src_port;
-            ip4_addr_t src_addr = hdr.ipv4.src_addr;
-            bit<8> protocol = hdr.ipv4.protocol;
-
+            port_t eport = meta.id.dst_port;
             
-            if(eport <= PORT_MIN || (bit<32>)eport >= PORT_MAX) {
+            meta.tmp_u32_1 = (bit<32>)eport;
+            meta.tmp_u32_2 = meta.tmp_u32_1;//(bit<32>)PORT_MIN;
+            meta.tmp_u32_3 = meta.tmp_u32_1;//(bit<32>)PORT_MAX;
+
+            if((meta.tmp_u32_2 & 0x80000000) == 0x80000000 || (meta.tmp_u32_3 & 0x80000000) == 0x0000000) {
                 drop();
                 return;
             }
 
-            reverse_map_read(eport - PORT_MIN);// -> meta.index
+            meta.tmp_u16_1 = eport - PORT_MIN;
+            reverse_map_read(meta.tmp_u16_1);// -> meta.index
 
             // 注意！！这里读出来的meta.index可能为0
 
             //assert(meta.index < SWITCH_PORT_NUM); //
 
-            map_read(meta.index);//meta.index可能为0
-
+            map3_read(meta.index);//meta.index可能为0
+            map2_read(meta.index);
+            map1_read(meta.index);
+            map0_read(meta.index);
             
             if(meta.index == 0 || meta.reg_map.eport != eport) {
                 // eport is not keep by switch
@@ -822,10 +730,14 @@ control IngressP(
                 send_to_NFV();
             }
             else {
-                ipv4_flow_id_t map_id = meta.reg_map.id;
+                ipv4_flow_id_t reg_id = meta.reg_map.id;
 
-                if({map_id.dst_addr, map_id.dst_port, map_id.protocol} != {src_addr, src_port, protocol}) {
+                if(reg_id.dst_addr != meta.id.src_addr) {
                     // eport is keep by switch but id mismatch
+                    drop();
+                    return;
+                }
+                if(reg_id.dst_port != meta.id.src_port || reg_id.protocol != meta.id.protocol) {
                     drop();
                     return;
                 }
@@ -837,18 +749,30 @@ control IngressP(
                     return;
                 }
 
-                reverse_translate();
+                // reverse_translate
+                hdr.ipv4.dst_addr = meta.reg_map.id.src_addr;
+                if(meta.is_tcp)
+                    hdr.tcp.dst_port = meta.reg_map.id.src_port;
+                else
+                    hdr.udp.dst_port = meta.reg_map.id.src_port;
+
+                
                 meta.apply_dst = true;
                 //ip2port_dmac.apply();
             }
         }
+        /*
         else if(!meta.is_from_nfv && hdr.metadata.is_to_out == 1) {
-            get_id();
+            
             get_index();
 
             //read_entry();
             
-            map_read(meta.index);
+            map3_read(meta.index);
+            map2_read(meta.index);
+            map1_read(meta.index);
+            map0_read(meta.index);
+            
             meta.match = meta.reg_map.id == meta.id;
             if(meta.match) {
                 update_time_on_match(meta.index);
