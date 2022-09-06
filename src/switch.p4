@@ -62,10 +62,7 @@ header nat_metadata_t {//36
     port_t      switch_port;
     version_t   version;
 
-    bit         is_to_in;//最终会去往in
-    bit         is_to_out;
-    bit         is_update;
-    bit<5>      zero2;
+    bit<8>      type;// 8w0b100_00000 to_in, 8w0b010_00000 to_out, 8w0b001_00000 update, 
 
     
 
@@ -132,27 +129,28 @@ enum bit<2> hdr_type_t {
 
 struct metadata {
     /* parser -> ingress */
-    hdr_type_t      hdr_type;// 
     bool            is_tcp;
-    bit<16>         L4_length;
 
     bool            metadata_checksum_correct;
     bool            ipv4_checksum_correct;
     bit<16>         L4_neg_partial_checksum;
     
 
-    /* ingress */
-    bool            control_ignore;
+    /* ingress.get_transition_type -> ingress */
+    bit<3>          transition_type;    // 0:in->out/nfv, 1:out->in/nfv, 2:nfv->out, 3:nfv->in, 4:nfv_update 
+    index_t         reverse_index;  
+    bool            reverse_eport_valid;
     bool            control_ignore0;
     bool            control_ignore1;
     bool            control_ignore2;
     bool            control_ignore3;
-    bool            control_ignore4;
 
-    bool            is_from_nfv;
+    /* ingress */
+    bool            ingress_end;
+    bit<2>          way_out;            // 0:drop, 1:to an out port, 2:to nfv
 
     // packet info
-    ipv4_flow_id_t  id;
+    ipv4_flow_id_t  id;          
     index_t         index;
     time_t          time;
     // register
@@ -166,7 +164,7 @@ struct metadata {
     bool            match;
     version_t       version_diff;
     version_t       version;
-    bool            apply_dst;
+    
 
     /* ingress -> deparser */
     bool            update_metadata;
@@ -175,22 +173,11 @@ struct metadata {
     bool            update_udp;
 
     /* ingress checksum -> egress checksum */
-    bit<16>         L4_checksum_partial;
-
-
     bool            tmp_bool1;
     bool            tmp_bool2;
     bool            tmp_bool3;
     bool            tmp_bool4;
 
-    bit             tmp_bit1;
-    bit             tmp_bit2;
-
-    bit<32>         tmp_u32_1;
-    bit<32>         tmp_u32_2;
-    bit<32>         tmp_u32_3;
-
-    bit<16>         tmp_u16_1;
 }
 
 
@@ -228,42 +215,84 @@ parser ParserI(packet_in packet,
 
     state parse_ethernet {
         packet.extract(hdr.ethernet);
-        transition select(hdr.ethernet.ether_type) {
-            TYPE_IPV4: mark_normal;
-            TYPE_METADATA: parse_metadata;
+        transition select(ig_intr_md.ingress_port ++ hdr.ethernet.ether_type) {//没检查MAC addr，没必要
+            NFV_PORT ++ TYPE_METADATA                   :   parse_metadata;
+            NFV_PORT ++ TYPE_IPV4                       :   reject;
+            (9w0 ++ TYPE_IPV4) &&& (9w0 ++ 16w0xffff)   :   parse_ipv4_with_transition_type;
         }
-    }
-
-    state mark_normal {
-        meta.hdr_type = hdr_type_t.normal;
-        transition parse_ipv4;
     }
 
     state parse_metadata {
         packet.extract(hdr.metadata);
         metadata_csum.add(hdr.metadata);
         meta.metadata_checksum_correct = metadata_csum.verify();
-        transition select(hdr.metadata.is_update) {
-            1w0: mark_with_meta;
-            1w1: mark_meta_only;
+        transition select(hdr.metadata.type) {
+            8w0b010_00000 :   mark_type_2;
+            8w0b100_00000 :   mark_type_3;
+            8w0b001_00000 :   mark_type_4;
         }
     }
 
-    state mark_with_meta {
-        meta.hdr_type = hdr_type_t.with_meta;
-        transition parse_ipv4;
+    state mark_type_2 {
+        meta.transition_type = 2;
+        transition parse_inner_ipv4;
     }
 
-    state mark_meta_only {
-        meta.hdr_type = hdr_type_t.meta_only;
+    state mark_type_3 {
+        meta.transition_type = 3;
+        transition parse_inner_ipv4;
+    }
+
+    state mark_type_4 {
+        meta.transition_type = 4;
         transition accept;
     }
 
-    state parse_ipv4 {
+    state parse_ipv4_with_transition_type {
+        ipv4_t ip = packet.lookahead<ipv4_t>();
+        transition select(ip.src_addr) {
+            LAN_ADDR &&& LAN_ADDR_MASK  :   parse_sin;
+            default                     :   parse_sout;
+        }
+    }
+
+    state parse_sin {
+        ipv4_t ip = packet.lookahead<ipv4_t>();
+        transition select(ip.dst_addr) {
+            LAN_ADDR &&& LAN_ADDR_MASK  :   reject;
+            default                     :   mark_type_0;
+        }
+    }
+
+    state parse_sout {
+        ipv4_t ip = packet.lookahead<ipv4_t>();
+        transition select(ip.dst_addr) {
+            NAT_ADDR    :   mark_type_1;
+            default     :   reject;
+        }
+    }
+
+    state mark_type_0 {
+        meta.transition_type = 0;
+        transition parse_inner_ipv4;
+    }
+
+    state mark_type_1 {
+        meta.transition_type = 1;
+        transition parse_inner_ipv4;
+    }
+
+    state parse_inner_ipv4 {
         packet.extract(hdr.ipv4);
         ipv4_csum.add(hdr.ipv4);
         meta.ipv4_checksum_correct = ipv4_csum.verify();
-        L4_csum.subtract({hdr.ipv4.src_addr, hdr.ipv4.dst_addr, 8w0, hdr.ipv4.protocol, hdr.ipv4.total_length});
+        L4_csum.subtract({hdr.ipv4.src_addr, hdr.ipv4.dst_addr});
+        // fill id
+        meta.id.src_addr = hdr.ipv4.src_addr;
+        meta.id.dst_addr = hdr.ipv4.dst_addr;
+        meta.id.protocol = hdr.ipv4.protocol;
+        meta.id.zero = 0;
+
         transition select(hdr.ipv4.protocol ++ hdr.ipv4.ihl) {
             TCP_PROTOCOL ++ 4w5: parse_tcp;
             UDP_PROTOCOL ++ 4w5: parse_udp;
@@ -272,17 +301,27 @@ parser ParserI(packet_in packet,
 
     state parse_tcp {
         packet.extract(hdr.tcp);
-        L4_csum.subtract({hdr.tcp.src_port, hdr.tcp.dst_port, hdr.tcp.unused1, hdr.tcp.unused2});
+        L4_csum.subtract({hdr.tcp.src_port, hdr.tcp.dst_port});
         meta.L4_neg_partial_checksum = L4_csum.get();
         meta.is_tcp = true;
+
+        // fill id
+        meta.id.src_port = hdr.tcp.src_port;
+        meta.id.dst_port = hdr.tcp.dst_port;
+
         transition accept;
     }
 
     state parse_udp {
         packet.extract(hdr.udp);
-        L4_csum.subtract({hdr.udp.src_port, hdr.udp.dst_port, hdr.udp.unused});
+        L4_csum.subtract({hdr.udp.src_port, hdr.udp.dst_port});
         meta.L4_neg_partial_checksum = L4_csum.get();
         meta.is_tcp = false;
+
+        // fill id
+        meta.id.src_port = hdr.udp.src_port;
+        meta.id.dst_port = hdr.udp.dst_port;
+
         transition accept;
     }
 }
@@ -295,74 +334,163 @@ control get_transition_type(
         inout headers hdr,
         inout metadata meta,
         in ingress_intrinsic_metadata_t ig_intr_md) {
-    apply {
-        if(ig_intr_md.ingress_port == NFV_PORT) {
 
-            meta.is_from_nfv = true;
+    Register<bit<16>, bit<16>>(1) help;
+
+    RegisterAction<bit<16>, bit<16>, bit>(help) reg_check_tcp_eport = {
+        void apply(inout bit<16> reg, out bit ret) {
+            if(PORT_MIN < hdr.tcp.dst_port && (bit<32>)hdr.tcp.dst_port < PORT_MAX)
+                ret = 1;
+            else 
+                ret = 0;
+        }
+    };
+    RegisterAction<bit<16>, bit<16>, bit>(help) reg_check_udp_eport = {
+        void apply(inout bit<16> reg, out bit ret) {
+            if(PORT_MIN < hdr.udp.dst_port && (bit<32>)hdr.udp.dst_port < PORT_MAX)
+                ret = 1;
+            else 
+                ret = 0;
+        }
+    };
+
+    action check_tcp_eport() {
+        meta.reverse_eport_valid = (bool)reg_check_tcp_eport.execute(0);
+    }
+
+    action check_udp_eport() {
+        meta.reverse_eport_valid = (bool)reg_check_udp_eport.execute(0);
+    }
+
+    apply {
+        //if(ig_intr_md.ingress_port == NFV_PORT) {
 
             //我不想检查MAC地址，MAC地址无所谓了
-            if(hdr.ethernet.ether_type != TYPE_METADATA)
-                meta.control_ignore0 = true;
+            
+            //ethertype不需要检查，parser筛选过了
 
             /*if(hdr.metadata.zero1 != 0 || hdr.metadata.zero2 != 0) {
                 meta.control_ignore = true;
             }*/
-            bit<3> direction = hdr.metadata.is_to_in ++ hdr.metadata.is_to_out ++ hdr.metadata.is_update;
-            if(direction != 0b100 && direction != 0b010 && direction != 0b001) {
-                meta.control_ignore1 = true;
-            } 
-            bit<3> update_valid_bits = (bit<2>)meta.hdr_type ++ hdr.metadata.is_update;
+            /*
+            bit<5> update_valid_bits = (bit<2>)meta.hdr_type ++ hdr.metadata.is_to_in ++ hdr.metadata.is_to_out ++ hdr.metadata.is_update;
             bit<2> type_meta_only = (bit<2>)hdr_type_t.meta_only;
             bit<2> type_with_meta = (bit<2>)hdr_type_t.with_meta;
-            if(update_valid_bits != type_meta_only ++ 1w1 && 
-                update_valid_bits != type_with_meta ++ 1w0) {
-                meta.control_ignore2 = true;
+            
+            if(update_valid_bits == type_with_meta ++ 3w0b010) {
+                meta.transition_type = 2;
+                meta.control_ignore1 = false;
             }
-        }
-        else {
-            meta.is_from_nfv = false;
-
+            else if(update_valid_bits == type_with_meta ++ 3w0b100) {
+                meta.transition_type = 3;
+                meta.control_ignore1 = false;
+            }
+            else if(update_valid_bits == type_meta_only ++ 3w0b001) {
+                meta.transition_type = 4;
+                meta.control_ignore1 = false;
+            } 
+            else {
+                meta.control_ignore1 = true;
+            }
+            */
+        /*}
+        else {*/
+            /*
             if(meta.hdr_type != hdr_type_t.normal) 
-                meta.control_ignore3 = true;
+                meta.control_ignore2 = true;
+            else 
+                meta.control_ignore2 = false;
+            */
 
             // TODO 改这个else，或许可以直接用一个table来记录哪个是LAN port
             // 那个是WAN port，这样比较省事
 
+            // 用register action 比较 dst_port 和 PORT_MIN/PORT_MAX，获取reverse_index和reverse_eport_valid
+            /*
+            if(meta.is_tcp) {
+                check_tcp_eport();
+                meta.reverse_index = hdr.tcp.dst_port - PORT_MIN;
+            }
+            else {
+                check_udp_eport();
+                meta.reverse_index = hdr.udp.dst_port - PORT_MIN;
+            }
+            */
+
             //不知道为什么，control里用< <= > >=会出问题
             // src IN LAN
+            /*
             if((hdr.ipv4.src_addr & LAN_ADDR_MASK) == LAN_ADDR)
                 meta.tmp_bool1 = true;
             else 
                 meta.tmp_bool1 = false;
             
             // dst OUT LAN
-            if((hdr.ipv4.src_addr & LAN_ADDR_MASK) == LAN_ADDR) 
+            if((hdr.ipv4.dst_addr & LAN_ADDR_MASK) == LAN_ADDR) 
                 meta.tmp_bool2 = false;
             else 
                 meta.tmp_bool2 = true;
-
+            */
+        //}
+        /*
+        if(ig_intr_md.ingress_port != NFV_PORT) {
+            
             if(meta.tmp_bool1 && meta.tmp_bool2) {
                 hdr.metadata.is_to_in = 0;
                 hdr.metadata.is_to_out = 1;
+                meta.transition_type = 0;
+                meta.control_ignore3 = false;
             }
-            else if(!meta.tmp_bool1 && hdr.ipv4.dst_addr == NAT_ADDR) {
+            else if(!meta.tmp_bool1 && hdr.ipv4.dst_addr == NAT_ADDR && meta.reverse_eport_valid) {
                 hdr.metadata.is_to_in = 1;
                 hdr.metadata.is_to_out = 0;
+                meta.transition_type = 1;
+                meta.control_ignore3 = false;
             }
             else {
-                meta.control_ignore4 = true;
+                meta.control_ignore3 = true;
+            }
+            
+        }*/
+        if(meta.transition_type == 1) {
+            if(meta.is_tcp) {
+                check_tcp_eport();
+                meta.reverse_index = hdr.tcp.dst_port - PORT_MIN;
+            }
+            else {
+                check_udp_eport();
+                meta.reverse_index = hdr.udp.dst_port - PORT_MIN;
             }
         }
     }
 }
 
-control IngressP(
+control get_id(
+        in headers hdr,
+        inout metadata meta)
+{
+    apply {
+        if(meta.is_tcp) {
+            meta.id.src_port = hdr.tcp.src_port;
+            meta.id.dst_port = hdr.tcp.dst_port;
+        }
+        else {
+            meta.id.src_port = hdr.udp.src_port;
+            meta.id.dst_port = hdr.udp.dst_port;
+        }
+        meta.id.src_addr = hdr.ipv4.src_addr;
+        meta.id.dst_addr = hdr.ipv4.dst_addr;
+        meta.id.protocol = hdr.ipv4.protocol;
+        meta.id.zero = 0;
+    }
+}
+
+control send_out(
         inout headers hdr,
         inout metadata meta,
-        in ingress_intrinsic_metadata_t ig_intr_md,
-        in ingress_intrinsic_metadata_from_parser_t ig_intr_prsr_md,
-        inout ingress_intrinsic_metadata_for_deparser_t ig_intr_dprs_md,
-        inout ingress_intrinsic_metadata_for_tm_t ig_intr_tm_md) {
+        inout ingress_intrinsic_metadata_for_deparser_t ig_intr_dprs_md, 
+        inout ingress_intrinsic_metadata_for_tm_t ig_intr_tm_md
+        ) {
 
     action drop() {
         ig_intr_dprs_md.drop_ctl = 0x1;
@@ -385,6 +513,83 @@ control IngressP(
         size = 16;
         default_action = drop();
     }
+
+    apply {
+        if(meta.way_out == 1) {// to an out port
+            ip2port_dmac.apply();
+            //port2smac.apply();
+        }
+        else if(meta.way_out == 2) {// to nfv
+            hdr.ethernet.ether_type = TYPE_METADATA;
+            hdr.ethernet.src_addr = 48w1;
+            hdr.ethernet.dst_addr = 48w2;
+            hdr.metadata.setValid();
+        }
+        else {
+            drop();
+        }
+        
+        if(meta.way_out == 2) {
+            
+            hdr.metadata.src_addr = meta.id.src_addr;
+            hdr.metadata.dst_addr = meta.id.dst_addr;
+            hdr.metadata.src_port = meta.id.src_port;
+            hdr.metadata.dst_port = meta.id.dst_port;
+            hdr.metadata.protocol = meta.id.protocol;
+            hdr.metadata.zero1 = 0;
+        
+            //hdr.metadata.switch_port = switch_port;
+            
+            //hdr.metadata.is_to_in
+            //hdr.metadata.is_to_out
+            
+            //hdr.metadata.is_update = timeout;
+            
+            //hdr.metadata.version = version;
+            //hdr.metadata.index = index;
+            hdr.metadata.nfv_time = 0;
+            hdr.metadata.checksum = 0;
+            
+            ig_intr_tm_md.ucast_egress_port = NFV_PORT;
+        }
+        //@pragma stage
+        
+        if(meta.way_out == 2) {
+            if(meta.transition_type == 0) {
+                hdr.metadata.switch_port = meta.reg_map.eport;
+
+                //hdr.metadata.is_to_in = 0;
+                //hdr.metadata.is_to_out = 1;
+                //hdr.metadata.is_update = (bit)meta.timeout;
+                //hdr.metadata.zero2 = 0;
+                //hdr.metadata.type = 2w0b01 ++ (bit)meta.timeout ++ 5w0;//8w0b010_00000 | (8w1<< );
+
+                hdr.metadata.version = meta.version;
+                hdr.metadata.index = meta.index;
+            }
+            else {
+                hdr.metadata.switch_port = 0;
+
+                //hdr.metadata.type = 8w0b100_00000;
+
+                hdr.metadata.version = 0;
+                hdr.metadata.index = 0;
+            }
+        }
+        
+    }
+    //学长，能帮我看看这个PHV分配的问题吗，出问题的是一段连续的赋值代码，
+}
+
+control IngressP(
+        inout headers hdr,
+        inout metadata meta,
+        in ingress_intrinsic_metadata_t ig_intr_md,
+        in ingress_intrinsic_metadata_from_parser_t ig_intr_prsr_md,
+        inout ingress_intrinsic_metadata_for_deparser_t ig_intr_dprs_md,
+        inout ingress_intrinsic_metadata_for_tm_t ig_intr_tm_md) {
+
+    
 
     Hash<index_t>(HashAlgorithm_t.CRC16) hashmap;
     
@@ -482,9 +687,8 @@ control IngressP(
 
     RegisterAction<version_t, index_t, version_t>(version) reg_update_version = {
         void apply(inout version_t reg_version, out version_t ret) {
-            version_t version_diff = meta.version - reg_version;
-            ret = version_diff;
-            if(version_diff == 1) {
+            ret = meta.version - reg_version;
+            if(meta.version - reg_version == 1) {
                 reg_version = meta.version;
             }
         }
@@ -517,16 +721,16 @@ control IngressP(
     }
 
     action map1_read(in index_t index) {
-        meta.reg_tmp1 = reg_map1_read.execute(index);
-        meta.reg_map.id.src_port = meta.reg_tmp1[31:16];
-        meta.reg_map.id.dst_port = meta.reg_tmp1[15:0];
+        bit<32>tmp = reg_map1_read.execute(index);
+        meta.reg_map.id.src_port = tmp[31:16];
+        meta.reg_map.id.dst_port = tmp[15:0];
     }
 
     action map0_read(in index_t index) {
-        meta.reg_tmp0 = reg_map0_read.execute(index);
-        meta.reg_map.id.protocol = meta.reg_tmp0[31:24];
-        meta.reg_map.id.zero = meta.reg_tmp0[23:16];
-        meta.reg_map.eport = meta.reg_tmp0[15:0];
+        bit<32>tmp = reg_map0_read.execute(index);
+        meta.reg_map.id.protocol = tmp[31:24];
+        meta.reg_map.id.zero = tmp[23:16];
+        meta.reg_map.eport = tmp[15:0];
     }
 
     action map_swap(in index_t index) {
@@ -572,6 +776,7 @@ control IngressP(
 
     action reverse_map_read(in index_t index) {
         meta.index = reg_reverse_map_read.execute(index);
+        //ret 
     }
 
     action reverse_map_write(in index_t index) {
@@ -584,8 +789,9 @@ control IngressP(
 
     action get_index() {
         ipv4_flow_id_t id = meta.id;
-        meta.index = 1 + hashmap.get({id.src_addr, id.dst_addr, id.src_port, id.dst_port, id.protocol, id.zero}, 
-                                (index_t)0, (index_t)SWITCH_PORT_NUM-1);
+        meta.index = hashmap.get({id.src_addr, id.dst_addr, id.src_port, id.dst_port, id.protocol, id.zero}, 
+                                (index_t)0, (index_t)SWITCH_PORT_NUM);
+        //ret
         // port PORT_MIN and index 0 is reserved
     }
 
@@ -593,50 +799,6 @@ control IngressP(
         meta.time = 1w0 ++ (bit<31>)ig_intr_md.ingress_mac_tstamp;
         // 48->31->32
     }    
-
-    action translate() {
-        hdr.ipv4.src_addr = NAT_ADDR;
-        if(meta.is_tcp) 
-            hdr.tcp.src_port = meta.reg_map.eport;
-        else
-            hdr.udp.src_port = meta.reg_map.eport;
-    }
-    
-    action reverse_translate() {
-        
-    }
-
-    action set_metadata(in bool send_update) {
-        hdr.ethernet.ether_type = TYPE_METADATA;
-
-        // Why p4c for tofino does not support "struct in header" ???
-        hdr.metadata.src_addr = meta.id.src_addr;
-        hdr.metadata.dst_addr = meta.id.dst_addr;
-        hdr.metadata.src_port = meta.id.src_port;
-        hdr.metadata.dst_port = meta.id.dst_port;
-        hdr.metadata.protocol = meta.id.protocol;
-        hdr.metadata.zero1 = 0;
-
-        hdr.metadata.switch_port = send_update ? meta.reg_map.eport : 0;
-        
-        //hdr.metadata.primary_map = meta.entry.map;
-        //hdr.metadata.secondary_map = {meta.id, 0};
-        
-        //hdr.metadata.is_to_in
-        //hdr.metadata.is_to_out
-        hdr.metadata.is_update = send_update ? (bit)meta.timeout : 0;
-        hdr.metadata.zero2 = 0;
-        hdr.metadata.version = send_update ? meta.version : 0;
-        hdr.metadata.index = send_update ? meta.index : 0;
-        hdr.metadata.nfv_time = 0;
-        hdr.metadata.checksum = 0;
-    }
-
-    action send_to_NFV() {
-        ig_intr_tm_md.ucast_egress_port = 2;
-        hdr.ethernet.src_addr = 48w1;
-        hdr.ethernet.dst_addr = 48w2;
-    }
 
     action get_smac(mac_addr_t smac) {
         hdr.ethernet.src_addr = smac;
@@ -660,113 +822,194 @@ control IngressP(
         if(ig_intr_prsr_md.parser_err != 0 ||                               // parse error
             (hdr.metadata.isValid() && !meta.metadata_checksum_correct) ||  // metadata checksum error
             (hdr.ipv4.isValid() && !meta.ipv4_checksum_correct)) {          // ipv4 checksum error
-            drop();
-            return;
+            meta.way_out = 0;
+            meta.ingress_end = true;
         }
-        
-        // 检查包的合法性
-        hdr.metadata.setValid();
-        get_transition_type.apply(hdr, meta, ig_intr_md);
-        
-        if(meta.control_ignore0 || meta.control_ignore1 || meta.control_ignore2 || meta.control_ignore3 || meta.control_ignore4) {
-            drop();
-            return;
+        else {
+            // 检查反向流的eport合法性
+            get_transition_type.apply(hdr, meta, ig_intr_md);//这玩意儿4/5个stage
+            meta.ingress_end = false;// 这是唯一一个false，用于初始化
         }
 
+        // 检查反向流的eport合法性
+        if(meta.ingress_end == false && !meta.reverse_eport_valid) {
+            meta.way_out = 0;
+            meta.ingress_end = true;
+        }
+        
         // 初始化
         // time
         get_time();
 
-        // L4_length
-        if(hdr.ipv4.isValid()) {
-            meta.L4_length = (bit<16>)(hdr.ipv4.ihl << 2);
-            meta.L4_length = hdr.ipv4.total_length - meta.L4_length;
+        if(meta.ingress_end == false) {
+            if (meta.transition_type == 0) {
+                get_index();//这个action会引起compiler bug???
+            }
+            else if (meta.transition_type == 1) {
+                reverse_map_read(meta.reverse_index);// 这个始终会报错？？？？？？？？？？？？？？？？？？？？？？？
+                // 注意！！这里读出来的meta.index可能为0
+                //assert(meta.index < SWITCH_PORT_NUM); //
+            }
+            else if (meta.transition_type == 2 || meta.transition_type == 3) {
+                hdr.metadata.setInvalid();
+                hdr.ethernet.ether_type = TYPE_IPV4;
+                meta.way_out = 1;
+                meta.ingress_end = true;
+            }
+        }
+
+        //if(meta.ingress_end == false) {
+            
+        //}
+
+        // register map
+        if(meta.ingress_end == false) {
+            if (meta.transition_type == 0 || meta.transition_type == 1) {
+                map3_read(meta.index);
+                map2_read(meta.index);
+                map1_read(meta.index);
+                map0_read(meta.index);
+            }
         }
         
-        // id
-        if(meta.is_tcp) {
-            meta.id.src_port = hdr.tcp.src_port;
-            meta.id.dst_port = hdr.tcp.dst_port;
-        }
-        else {
-            meta.id.src_port = hdr.udp.src_port;
-            meta.id.dst_port = hdr.udp.dst_port;
-        }
-        meta.id.src_addr = hdr.ipv4.src_addr;
-        meta.id.dst_addr = hdr.ipv4.dst_addr;
-        meta.id.protocol = hdr.ipv4.protocol;
-        meta.id.zero = 0;
-
-
-        meta.apply_dst = false;
-
-        if(!meta.is_from_nfv && hdr.metadata.is_to_in == 1) {
-            port_t eport = meta.id.dst_port;
-            
-            meta.tmp_u32_1 = (bit<32>)eport;
-            meta.tmp_u32_2 = meta.tmp_u32_1;//(bit<32>)PORT_MIN;
-            meta.tmp_u32_3 = meta.tmp_u32_1;//(bit<32>)PORT_MAX;
-
-            if((meta.tmp_u32_2 & 0x80000000) == 0x80000000 || (meta.tmp_u32_3 & 0x80000000) == 0x0000000) {
-                drop();
-                return;
+        // version
+        if(meta.ingress_end == false) {
+            if (meta.transition_type == 0 || meta.transition_type == 1) {
+                read_version(meta.index);
             }
+        }
 
-            meta.tmp_u16_1 = eport - PORT_MIN;
-            reverse_map_read(meta.tmp_u16_1);// -> meta.index
+        
+        // this is for reverse match
+        
+        
+        if(meta.ingress_end == false) {
+            if (meta.transition_type == 0) {
 
-            // 注意！！这里读出来的meta.index可能为0
+                if(meta.reg_map.id.src_addr == meta.id.src_addr) 
+                    meta.tmp_bool1 = true;
+                else   
+                    meta.tmp_bool1 = false;
 
-            //assert(meta.index < SWITCH_PORT_NUM); //
-
-            map3_read(meta.index);//meta.index可能为0
-            map2_read(meta.index);
-            map1_read(meta.index);
-            map0_read(meta.index);
-            
-            if(meta.index == 0 || meta.reg_map.eport != eport) {
-                // eport is not keep by switch
-                set_metadata(false);
-                send_to_NFV();
+                if(meta.reg_map.id.dst_addr == meta.id.dst_addr)
+                    meta.tmp_bool2 = true;
+                else   
+                    meta.tmp_bool2 = false;
+                
+                if(meta.reg_map.id.src_port == meta.id.src_port)
+                    meta.tmp_bool3 = true;
+                else   
+                    meta.tmp_bool3 = false;
+                
+                if(meta.reg_map.id.dst_port == meta.id.dst_port && meta.reg_map.id.protocol == meta.id.protocol)
+                    meta.tmp_bool4 = true;
+                else   
+                    meta.tmp_bool4 = false;
+                
             }
-            else {
-                ipv4_flow_id_t reg_id = meta.reg_map.id;
+        
+            //根据实验，下面这个分支不能与上面那个同时存在，分成两个表(else if -> if)并不能解决问题
+            //初步分析，两个同时存在时，其依赖的上游的某个stage中的分支也必须同时存在，从而导致上游某个stage中的两个分支产生了冲突
+            else if (meta.transition_type == 1) {
+                if(meta.reg_map.id.dst_addr == meta.id.src_addr)
+                    meta.tmp_bool1 = true;
+                else   
+                    meta.tmp_bool1 = false;
 
-                if(reg_id.dst_addr != meta.id.src_addr) {
+                if(meta.reg_map.id.dst_port == meta.id.src_port && meta.reg_map.id.protocol == meta.id.protocol) 
+                    meta.tmp_bool2 = true;
+                else 
+                    meta.tmp_bool2 = false;
+
+                if(meta.reg_map.eport == meta.id.dst_port)
+                    meta.tmp_bool3 = true;
+                else 
+                    meta.tmp_bool3 = false;
+            }
+        }   
+            
+        // register time
+        
+        if(meta.ingress_end == false) {
+            if (meta.transition_type == 0) {
+                if(meta.tmp_bool1 && meta.tmp_bool2 && meta.tmp_bool3 && meta.tmp_bool4) {
+                    meta.match = true;
+                    update_time_on_match(meta.index);
+                }
+                else {
+                    meta.match = false;
+                    update_time_on_mismatch(meta.index);
+                }
+            }
+            else if (meta.transition_type == 1) {
+                if(!meta.tmp_bool3) {
+                    // eport is not keep by switch
+                    meta.way_out = 2;
+                    meta.ingress_end = true;
+                }
+                else if(meta.tmp_bool1 && meta.tmp_bool2) {
+                    update_time_on_match(meta.index);
+                    // it is not necessary to update_time_on_mismatch
+                }
+                else {
                     // eport is keep by switch but id mismatch
-                    drop();
-                    return;
-                }
-                if(reg_id.dst_port != meta.id.src_port || reg_id.protocol != meta.id.protocol) {
-                    drop();
-                    return;
-                }
-                
-                update_time_on_match(meta.index);
-                if(meta.timeout) {
-                    // aging
-                    drop();
-                    return;
-                }
-
-                // reverse_translate
-                hdr.ipv4.dst_addr = meta.reg_map.id.src_addr;
-                if(meta.is_tcp)
-                    hdr.tcp.dst_port = meta.reg_map.id.src_port;
-                else
-                    hdr.udp.dst_port = meta.reg_map.id.src_port;
-
-                
-                meta.apply_dst = true;
-                //ip2port_dmac.apply();
+                    meta.way_out = 0;
+                    meta.ingress_end = true;
+                }    
             }
         }
+        
+        if(meta.ingress_end == false) {
+            if (meta.transition_type == 0) {
+                if(meta.match && meta.timeout == false) {
+                    // translate
+                    
+                    hdr.ipv4.src_addr = NAT_ADDR;
+                    if(meta.is_tcp) 
+                        hdr.tcp.src_port = meta.reg_map.eport;
+                    else
+                        hdr.udp.src_port = meta.reg_map.eport;
+
+                    meta.way_out = 1;
+                    meta.ingress_end = true;
+                }
+                else {
+                    //为什么加这个就会出现未分配？？？？？？？？？？？？？？？？？？？？？？
+                    meta.way_out = 2;
+                    meta.ingress_end = true;
+                }
+            }
+            else if (meta.transition_type == 1) {
+                if(!meta.timeout) {
+                    // reverse_translate
+                    hdr.ipv4.dst_addr = meta.reg_map.id.src_addr;
+                    if(meta.is_tcp)
+                        hdr.tcp.dst_port = meta.reg_map.id.src_port;
+                    else
+                        hdr.udp.dst_port = meta.reg_map.id.src_port;
+
+                    meta.way_out = 1;
+                    meta.ingress_end = true;
+                }
+                else {
+                    // aging
+                    meta.way_out = 0;
+                    meta.ingress_end = true;
+                }  
+            }
+        }
+
+        send_out.apply(hdr, meta, ig_intr_dprs_md, ig_intr_tm_md);
+    
+        
+        
+        
+            
+
         /*
-        else if(!meta.is_from_nfv && hdr.metadata.is_to_out == 1) {
+        else if(meta.transition_type == 0) {
             
             get_index();
-
-            //read_entry();
             
             map3_read(meta.index);
             map2_read(meta.index);
@@ -792,15 +1035,15 @@ control IngressP(
                 send_to_NFV();
             }        
         }
-        else if(meta.is_from_nfv && hdr.metadata.is_to_in == 1) {
+        else if(meta.transition_type == 3) {
             meta.apply_dst = true;
             //ip2port_dmac.apply();
         }
-        else if(meta.is_from_nfv && hdr.metadata.is_to_out == 1) {
+        else if(meta.transition_type == 2) {
             meta.apply_dst = true;
             //ip2port_dmac.apply();
         }
-        else if(meta.is_from_nfv && hdr.metadata.is_update == 1) {
+        else if(meta.transition_type == 4) {
             meta.index = hdr.metadata.index;
             meta.version = hdr.metadata.version;
             update_version(meta.index);
@@ -830,9 +1073,7 @@ control IngressP(
 
             send_to_NFV();
         }
-        if(meta.apply_dst) {
-            ip2port_dmac.apply();
-        }
+        
         
         meta.update_metadata = hdr.metadata.isValid();
         meta.update_ip = hdr.ipv4.isValid();
