@@ -524,13 +524,7 @@ control send_out(
             hdr.ethernet.src_addr = 48w1;
             hdr.ethernet.dst_addr = 48w2;
             hdr.metadata.setValid();
-        }
-        else {
-            drop();
-        }
-        
-        if(meta.way_out == 2) {
-            
+
             hdr.metadata.src_addr = meta.id.src_addr;
             hdr.metadata.dst_addr = meta.id.dst_addr;
             hdr.metadata.src_port = meta.id.src_port;
@@ -542,7 +536,6 @@ control send_out(
             
             //hdr.metadata.is_to_in
             //hdr.metadata.is_to_out
-            
             //hdr.metadata.is_update = timeout;
             
             //hdr.metadata.version = version;
@@ -551,18 +544,14 @@ control send_out(
             hdr.metadata.checksum = 0;
             
             ig_intr_tm_md.ucast_egress_port = NFV_PORT;
-        }
-        //@pragma stage
-        
-        if(meta.way_out == 2) {
+
             if(meta.transition_type == 0) {
                 hdr.metadata.switch_port = meta.reg_map.eport;
 
-                //hdr.metadata.is_to_in = 0;
-                //hdr.metadata.is_to_out = 1;
-                //hdr.metadata.is_update = (bit)meta.timeout;
-                //hdr.metadata.zero2 = 0;
-                //hdr.metadata.type = 2w0b01 ++ (bit)meta.timeout ++ 5w0;//8w0b010_00000 | (8w1<< );
+                if(meta.timeout) 
+                    hdr.metadata.type = 8w0b011_00000;
+                else 
+                    hdr.metadata.type = 8w0b010_00000;
 
                 hdr.metadata.version = meta.version;
                 hdr.metadata.index = meta.index;
@@ -570,13 +559,16 @@ control send_out(
             else {
                 hdr.metadata.switch_port = 0;
 
-                //hdr.metadata.type = 8w0b100_00000;
+                hdr.metadata.type = 8w0b100_00000;
 
                 hdr.metadata.version = 0;
                 hdr.metadata.index = 0;
             }
+
         }
-        
+        else {
+            drop();
+        }
     }
     //学长，能帮我看看这个PHV分配的问题吗，出问题的是一段连续的赋值代码，
 }
