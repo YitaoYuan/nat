@@ -57,7 +57,7 @@ header nat_metadata_t {//36
     port_t      src_port;
     port_t      dst_port;
     bit<8>      protocol;
-    bit<8>      zero1;
+    bit<8>      zero;
 
     port_t      switch_port;
     version_t   version;
@@ -137,40 +137,21 @@ struct metadata {
     
 
     /* ingress.get_transition_type -> ingress */
-    bit<3>          transition_type;    // 0:in->out/nfv, 1:out->in/nfv, 2:nfv->out, 3:nfv->in, 4:nfv_update 
+    bit<3>          transition_type;    // 0:in->out/nfv, 1:out->in/nfv, 2:nfv->out, 3:nfv->in, 4:in->nfv, 5:out->nfv, 6:update, 7:drop
     index_t         reverse_index;  
     bool            reverse_eport_valid;
-    bool            control_ignore0;
-    bool            control_ignore1;
-    bool            control_ignore2;
-    bool            control_ignore3;
 
     /* ingress */
     bool            ingress_end;
-    bit<2>          way_out;            // 0:drop, 1:to an out port, 2:to nfv
 
     // packet info
     ipv4_flow_id_t  id;          
-    index_t         index;
     time_t          time;
     // register
-    map_entry_t     reg_map;
-    bit<32>         reg_tmp3;
-    bit<32>         reg_tmp2;
-    bit<32>         reg_tmp1;
-    bit<32>         reg_tmp0;
 
     bool            timeout;
     bool            match;
     version_t       version_diff;
-    version_t       version;
-    
-
-    /* ingress -> deparser */
-    bool            update_metadata;
-    bool            update_ip;
-    bool            update_tcp;
-    bool            update_udp;
 
     /* ingress checksum -> egress checksum */
     bool            tmp_bool1;
@@ -229,7 +210,7 @@ parser ParserI(packet_in packet,
         transition select(hdr.metadata.type) {
             8w0b010_00000 :   mark_type_2;
             8w0b100_00000 :   mark_type_3;
-            8w0b001_00000 :   mark_type_4;
+            8w0b001_00000 :   mark_type_6;
         }
     }
 
@@ -243,8 +224,8 @@ parser ParserI(packet_in packet,
         transition parse_inner_ipv4;
     }
 
-    state mark_type_4 {
-        meta.transition_type = 4;
+    state mark_type_6 {
+        meta.transition_type = 6;
         transition accept;
     }
 
@@ -353,6 +334,14 @@ control get_transition_type(
                 ret = 0;
         }
     };
+    RegisterAction<bit<16>, bit<16>, bit>(help) reg_check_update_eport = {
+        void apply(inout bit<16> reg, out bit ret) {
+            if(PORT_MIN < hdr.metadata.switch_port && (bit<32>)hdr.metadata.switch_port < PORT_MAX)
+                ret = 1;
+            else 
+                ret = 0;
+        }
+    };
 
     action check_tcp_eport() {
         meta.reverse_eport_valid = (bool)reg_check_tcp_eport.execute(0);
@@ -362,96 +351,11 @@ control get_transition_type(
         meta.reverse_eport_valid = (bool)reg_check_udp_eport.execute(0);
     }
 
+    action check_update_eport() {
+        meta.reverse_eport_valid = (bool)reg_check_update_eport.execute(0);
+    }
+
     apply {
-        //if(ig_intr_md.ingress_port == NFV_PORT) {
-
-            //我不想检查MAC地址，MAC地址无所谓了
-            
-            //ethertype不需要检查，parser筛选过了
-
-            /*if(hdr.metadata.zero1 != 0 || hdr.metadata.zero2 != 0) {
-                meta.control_ignore = true;
-            }*/
-            /*
-            bit<5> update_valid_bits = (bit<2>)meta.hdr_type ++ hdr.metadata.is_to_in ++ hdr.metadata.is_to_out ++ hdr.metadata.is_update;
-            bit<2> type_meta_only = (bit<2>)hdr_type_t.meta_only;
-            bit<2> type_with_meta = (bit<2>)hdr_type_t.with_meta;
-            
-            if(update_valid_bits == type_with_meta ++ 3w0b010) {
-                meta.transition_type = 2;
-                meta.control_ignore1 = false;
-            }
-            else if(update_valid_bits == type_with_meta ++ 3w0b100) {
-                meta.transition_type = 3;
-                meta.control_ignore1 = false;
-            }
-            else if(update_valid_bits == type_meta_only ++ 3w0b001) {
-                meta.transition_type = 4;
-                meta.control_ignore1 = false;
-            } 
-            else {
-                meta.control_ignore1 = true;
-            }
-            */
-        /*}
-        else {*/
-            /*
-            if(meta.hdr_type != hdr_type_t.normal) 
-                meta.control_ignore2 = true;
-            else 
-                meta.control_ignore2 = false;
-            */
-
-            // TODO 改这个else，或许可以直接用一个table来记录哪个是LAN port
-            // 那个是WAN port，这样比较省事
-
-            // 用register action 比较 dst_port 和 PORT_MIN/PORT_MAX，获取reverse_index和reverse_eport_valid
-            /*
-            if(meta.is_tcp) {
-                check_tcp_eport();
-                meta.reverse_index = hdr.tcp.dst_port - PORT_MIN;
-            }
-            else {
-                check_udp_eport();
-                meta.reverse_index = hdr.udp.dst_port - PORT_MIN;
-            }
-            */
-
-            //不知道为什么，control里用< <= > >=会出问题
-            // src IN LAN
-            /*
-            if((hdr.ipv4.src_addr & LAN_ADDR_MASK) == LAN_ADDR)
-                meta.tmp_bool1 = true;
-            else 
-                meta.tmp_bool1 = false;
-            
-            // dst OUT LAN
-            if((hdr.ipv4.dst_addr & LAN_ADDR_MASK) == LAN_ADDR) 
-                meta.tmp_bool2 = false;
-            else 
-                meta.tmp_bool2 = true;
-            */
-        //}
-        /*
-        if(ig_intr_md.ingress_port != NFV_PORT) {
-            
-            if(meta.tmp_bool1 && meta.tmp_bool2) {
-                hdr.metadata.is_to_in = 0;
-                hdr.metadata.is_to_out = 1;
-                meta.transition_type = 0;
-                meta.control_ignore3 = false;
-            }
-            else if(!meta.tmp_bool1 && hdr.ipv4.dst_addr == NAT_ADDR && meta.reverse_eport_valid) {
-                hdr.metadata.is_to_in = 1;
-                hdr.metadata.is_to_out = 0;
-                meta.transition_type = 1;
-                meta.control_ignore3 = false;
-            }
-            else {
-                meta.control_ignore3 = true;
-            }
-            
-        }*/
         if(meta.transition_type == 1) {
             if(meta.is_tcp) {
                 check_tcp_eport();
@@ -461,6 +365,10 @@ control get_transition_type(
                 check_udp_eport();
                 meta.reverse_index = hdr.udp.dst_port - PORT_MIN;
             }
+        }
+        else if(meta.transition_type == 6) {
+            check_update_eport();
+            meta.reverse_index = hdr.metadata.switch_port - PORT_MIN;
         }
     }
 }
@@ -515,22 +423,24 @@ control send_out(
     }
 
     apply {
-        if(meta.way_out == 1) {// to an out port
+        if((meta.transition_type & 4) == 0) {// 0, 1, 2, 3
+            hdr.metadata.setInvalid();
+            hdr.ethernet.ether_type = TYPE_IPV4;
+
             ip2port_dmac.apply();
             //port2smac.apply();
         }
-        else if(meta.way_out == 2) {// to nfv
+        else if((meta.transition_type & 6) == 4){// 4, 5
             hdr.ethernet.ether_type = TYPE_METADATA;
             hdr.ethernet.src_addr = 48w1;
             hdr.ethernet.dst_addr = 48w2;
-            hdr.metadata.setValid();
 
             hdr.metadata.src_addr = meta.id.src_addr;
             hdr.metadata.dst_addr = meta.id.dst_addr;
             hdr.metadata.src_port = meta.id.src_port;
             hdr.metadata.dst_port = meta.id.dst_port;
             hdr.metadata.protocol = meta.id.protocol;
-            hdr.metadata.zero1 = 0;
+            hdr.metadata.zero = 0;
         
             //hdr.metadata.switch_port = switch_port;
             
@@ -545,18 +455,18 @@ control send_out(
             
             ig_intr_tm_md.ucast_egress_port = NFV_PORT;
 
-            if(meta.transition_type == 0) {
-                hdr.metadata.switch_port = meta.reg_map.eport;
+            if(meta.transition_type == 4) {
+                //hdr.metadata.switch_port = meta.reg_map.eport;
 
                 if(meta.timeout) 
                     hdr.metadata.type = 8w0b011_00000;
                 else 
                     hdr.metadata.type = 8w0b010_00000;
 
-                hdr.metadata.version = meta.version;
-                hdr.metadata.index = meta.index;
+                //hdr.metadata.version
+                //hdr.metadata.index
             }
-            else {
+            else if(meta.transition_type == 5){
                 hdr.metadata.switch_port = 0;
 
                 hdr.metadata.type = 8w0b100_00000;
@@ -564,9 +474,11 @@ control send_out(
                 hdr.metadata.version = 0;
                 hdr.metadata.index = 0;
             }
-
         }
-        else {
+        else if(meta.transition_type == 6) {
+            ig_intr_tm_md.ucast_egress_port = NFV_PORT;
+        }
+        else if(meta.transition_type == 7) {
             drop();
         }
     }
@@ -614,28 +526,24 @@ control IngressP(
             ret = reg;
         }
     };
-    RegisterAction<bit<32>, index_t, bit<32>>(map3) reg_map3_swap = {
-        void apply(inout bit<32> reg, out bit<32> ret) {
-            ret = reg;
-            reg = meta.reg_tmp3;
+    RegisterAction<bit<32>, index_t, bit<32>>(map3) reg_map3_write = {
+        void apply(inout bit<32> reg) {
+            reg = hdr.metadata.src_addr;
         }
     };
-    RegisterAction<bit<32>, index_t, bit<32>>(map2) reg_map2_swap = {
-        void apply(inout bit<32> reg, out bit<32> ret) {
-            ret = reg;
-            reg = meta.reg_tmp2;
+    RegisterAction<bit<32>, index_t, bit<32>>(map2) reg_map2_write = {
+        void apply(inout bit<32> reg) {
+            reg = hdr.metadata.dst_addr;
         }
     };
-    RegisterAction<bit<32>, index_t, bit<32>>(map1) reg_map1_swap = {
-        void apply(inout bit<32> reg, out bit<32> ret) {
-            ret = reg;
-            reg = meta.reg_tmp1;
+    RegisterAction<bit<32>, index_t, bit<32>>(map1) reg_map1_write = {
+        void apply(inout bit<32> reg) {
+            reg = hdr.metadata.src_port ++ hdr.metadata.dst_port;
         }
     };
-    RegisterAction<bit<32>, index_t, bit<32>>(map0) reg_map0_swap = {
-        void apply(inout bit<32> reg, out bit<32> ret) {
-            ret = reg;
-            reg = meta.reg_tmp0;
+    RegisterAction<bit<32>, index_t, bit<32>>(map0) reg_map0_write = {
+        void apply(inout bit<32> reg) {
+            reg = hdr.metadata.protocol ++ 8w0 ++ hdr.metadata.switch_port;
         }
     };
 
@@ -679,9 +587,9 @@ control IngressP(
 
     RegisterAction<version_t, index_t, version_t>(version) reg_update_version = {
         void apply(inout version_t reg_version, out version_t ret) {
-            ret = meta.version - reg_version;
-            if(meta.version - reg_version == 1) {
-                reg_version = meta.version;
+            ret = hdr.metadata.version - reg_version;
+            if(hdr.metadata.version - reg_version == 1) {
+                reg_version = hdr.metadata.version;
             }
         }
     };
@@ -694,7 +602,7 @@ control IngressP(
 
     RegisterAction<index_t, index_t, void>(reverse_map) reg_reverse_map_write = {
         void apply(inout index_t reg_index) {
-            reg_index = meta.index;
+            reg_index = hdr.metadata.index;
         }
     };
 
@@ -705,45 +613,40 @@ control IngressP(
     };
 
     action map3_read(in index_t index) {
-        meta.reg_map.id.src_addr = reg_map3_read.execute(index);
+        hdr.metadata.src_addr = reg_map3_read.execute(index);
     }
 
     action map2_read(in index_t index) {
-        meta.reg_map.id.dst_addr = reg_map2_read.execute(index);
+        hdr.metadata.dst_addr = reg_map2_read.execute(index);
     }
 
     action map1_read(in index_t index) {
         bit<32>tmp = reg_map1_read.execute(index);
-        meta.reg_map.id.src_port = tmp[31:16];
-        meta.reg_map.id.dst_port = tmp[15:0];
+        hdr.metadata.src_port = tmp[31:16];
+        hdr.metadata.dst_port = tmp[15:0];
     }
 
     action map0_read(in index_t index) {
         bit<32>tmp = reg_map0_read.execute(index);
-        meta.reg_map.id.protocol = tmp[31:24];
-        meta.reg_map.id.zero = tmp[23:16];
-        meta.reg_map.eport = tmp[15:0];
+        hdr.metadata.protocol = tmp[31:24];
+        hdr.metadata.zero = tmp[23:16];
+        hdr.metadata.switch_port = tmp[15:0];
     }
 
-    action map_swap(in index_t index) {
-        meta.reg_tmp3 = meta.reg_map.id.src_addr;
-        meta.reg_tmp2 = meta.reg_map.id.dst_addr;
-        meta.reg_tmp1 = meta.reg_map.id.src_port ++ meta.reg_map.id.dst_port;
-        meta.reg_tmp0 = meta.reg_map.id.protocol ++ meta.reg_map.id.zero ++ meta.reg_map.eport;
+    action map3_write(in index_t index) {
+        reg_map3_write.execute(index);
+    }
 
-        meta.reg_tmp3 = reg_map3_swap.execute(index);
-        meta.reg_tmp2 = reg_map2_swap.execute(index);
-        meta.reg_tmp1 = reg_map1_swap.execute(index);
-        meta.reg_tmp0 = reg_map0_swap.execute(index);
-        meta.reg_map = {
-            {meta.reg_tmp3,
-            meta.reg_tmp2,
-            meta.reg_tmp1[31:16],
-            meta.reg_tmp1[15:0],
-            meta.reg_tmp0[31:24],
-            meta.reg_tmp0[23:16]},
-            meta.reg_tmp0[15:0]
-        };
+    action map2_write(in index_t index) {
+        reg_map2_write.execute(index);
+    }
+
+    action map1_write(in index_t index) {
+        reg_map1_write.execute(index);
+    }
+
+    action map0_write(in index_t index) {
+        reg_map0_write.execute(index);
     }
 
     action update_time_on_match(in index_t index) {
@@ -759,7 +662,7 @@ control IngressP(
     }
 
     action read_version(in index_t index) {
-        meta.version = reg_read_version.execute(index);
+        hdr.metadata.version = reg_read_version.execute(index);
     }
 
     action update_version(in index_t index) {
@@ -767,7 +670,7 @@ control IngressP(
     }
 
     action reverse_map_read(in index_t index) {
-        meta.index = reg_reverse_map_read.execute(index);
+        hdr.metadata.index = reg_reverse_map_read.execute(index);
         //ret 
     }
 
@@ -775,13 +678,13 @@ control IngressP(
         reg_reverse_map_write.execute(index);
     }
 
-    action reverse_map_clear(in index_t index) {
+    /*action reverse_map_clear(in index_t index) {
         reg_reverse_map_clear.execute(index);
-    }
+    }*/
 
     action get_index() {
         ipv4_flow_id_t id = meta.id;
-        meta.index = hashmap.get({id.src_addr, id.dst_addr, id.src_port, id.dst_port, id.protocol, id.zero}, 
+        hdr.metadata.index = hashmap.get({id.src_addr, id.dst_addr, id.src_port, id.dst_port, id.protocol, id.zero}, 
                                 (index_t)0, (index_t)SWITCH_PORT_NUM);
         //ret
         // port PORT_MIN and index 0 is reserved
@@ -814,18 +717,18 @@ control IngressP(
         if(ig_intr_prsr_md.parser_err != 0 ||                               // parse error
             (hdr.metadata.isValid() && !meta.metadata_checksum_correct) ||  // metadata checksum error
             (hdr.ipv4.isValid() && !meta.ipv4_checksum_correct)) {          // ipv4 checksum error
-            meta.way_out = 0;
+            meta.transition_type = 7;
             meta.ingress_end = true;
         }
         else {
             // 检查反向流的eport合法性
-            get_transition_type.apply(hdr, meta, ig_intr_md);//这玩意儿4/5个stage
+            get_transition_type.apply(hdr, meta, ig_intr_md);
             meta.ingress_end = false;// 这是唯一一个false，用于初始化
         }
 
         // 检查反向流的eport合法性
         if(meta.ingress_end == false && !meta.reverse_eport_valid) {
-            meta.way_out = 0;
+            meta.transition_type = 7;
             meta.ingress_end = true;
         }
         
@@ -835,41 +738,65 @@ control IngressP(
 
         if(meta.ingress_end == false) {
             if (meta.transition_type == 0) {
-                get_index();//这个action会引起compiler bug???
-            }
-            else if (meta.transition_type == 1) {
-                reverse_map_read(meta.reverse_index);// 这个始终会报错？？？？？？？？？？？？？？？？？？？？？？？
-                // 注意！！这里读出来的meta.index可能为0
-                //assert(meta.index < SWITCH_PORT_NUM); //
+                get_index();//这个action会引起compiler bug??? 
             }
             else if (meta.transition_type == 2 || meta.transition_type == 3) {
-                hdr.metadata.setInvalid();
-                hdr.ethernet.ether_type = TYPE_IPV4;
-                meta.way_out = 1;
                 meta.ingress_end = true;
+            }
+
+            // let all packets have hdr.metadata
+            if(meta.transition_type == 0 || meta.transition_type == 1) {
+                hdr.metadata.setValid();
             }
         }
 
-        //if(meta.ingress_end == false) {
-            
-        //}
+        // register "version"
+        if(meta.ingress_end == false) {
+            if (meta.transition_type == 0) {//反向流不需要version
+                read_version(hdr.metadata.index);
+            }
+            else if(meta.transition_type == 6) {
+                update_version(hdr.metadata.index);
+            }
+        }
 
-        // register map
+        // register "reverse_map"
+        if(meta.ingress_end == false) {
+            if (meta.transition_type == 1) {
+                reverse_map_read(meta.reverse_index);// 这个始终会报错？？？？？？？？？？？？？？？？？？？？？？？
+            }
+            else if(meta.transition_type == 6) {
+                if(meta.version_diff == 1) {
+                    reverse_map_write(meta.reverse_index);
+                }
+                else if(meta.version_diff == 0) {
+                    meta.ingress_end = true;   
+                }
+                else {
+                    meta.transition_type = 7;
+                    meta.ingress_end = true;
+                }
+            }
+        }
+
+
+        // register "map"
         if(meta.ingress_end == false) {
             if (meta.transition_type == 0 || meta.transition_type == 1) {
-                map3_read(meta.index);
-                map2_read(meta.index);
-                map1_read(meta.index);
-                map0_read(meta.index);
+                map3_read(hdr.metadata.index);
+                map2_read(hdr.metadata.index);
+                map1_read(hdr.metadata.index);
+                map0_read(hdr.metadata.index);
+            }
+            else if(meta.transition_type == 6) {
+                map3_write(hdr.metadata.index);
+                map2_write(hdr.metadata.index);
+                map1_write(hdr.metadata.index);
+                map0_write(hdr.metadata.index);
             }
         }
         
-        // version
-        if(meta.ingress_end == false) {
-            if (meta.transition_type == 0 || meta.transition_type == 1) {
-                read_version(meta.index);
-            }
-        }
+        
 
         
         // this is for reverse match
@@ -878,22 +805,22 @@ control IngressP(
         if(meta.ingress_end == false) {
             if (meta.transition_type == 0) {
 
-                if(meta.reg_map.id.src_addr == meta.id.src_addr) 
+                if(hdr.metadata.src_addr == meta.id.src_addr) 
                     meta.tmp_bool1 = true;
                 else   
                     meta.tmp_bool1 = false;
 
-                if(meta.reg_map.id.dst_addr == meta.id.dst_addr)
+                if(hdr.metadata.dst_addr == meta.id.dst_addr)
                     meta.tmp_bool2 = true;
                 else   
                     meta.tmp_bool2 = false;
                 
-                if(meta.reg_map.id.src_port == meta.id.src_port)
+                if(hdr.metadata.src_port == meta.id.src_port)
                     meta.tmp_bool3 = true;
                 else   
                     meta.tmp_bool3 = false;
                 
-                if(meta.reg_map.id.dst_port == meta.id.dst_port && meta.reg_map.id.protocol == meta.id.protocol)
+                if(hdr.metadata.dst_port == meta.id.dst_port && hdr.metadata.protocol == meta.id.protocol)
                     meta.tmp_bool4 = true;
                 else   
                     meta.tmp_bool4 = false;
@@ -903,51 +830,55 @@ control IngressP(
             //根据实验，下面这个分支不能与上面那个同时存在，分成两个表(else if -> if)并不能解决问题
             //初步分析，两个同时存在时，其依赖的上游的某个stage中的分支也必须同时存在，从而导致上游某个stage中的两个分支产生了冲突
             else if (meta.transition_type == 1) {
-                if(meta.reg_map.id.dst_addr == meta.id.src_addr)
+                if(hdr.metadata.dst_addr == meta.id.src_addr)
                     meta.tmp_bool1 = true;
                 else   
                     meta.tmp_bool1 = false;
 
-                if(meta.reg_map.id.dst_port == meta.id.src_port && meta.reg_map.id.protocol == meta.id.protocol) 
+                if(hdr.metadata.dst_port == meta.id.src_port && hdr.metadata.protocol == meta.id.protocol) 
                     meta.tmp_bool2 = true;
                 else 
                     meta.tmp_bool2 = false;
 
-                if(meta.reg_map.eport == meta.id.dst_port)
+                if(hdr.metadata.switch_port == meta.id.dst_port)
                     meta.tmp_bool3 = true;
                 else 
                     meta.tmp_bool3 = false;
             }
         }   
             
-        // register time
+        // register "time"
         
         if(meta.ingress_end == false) {
             if (meta.transition_type == 0) {
                 if(meta.tmp_bool1 && meta.tmp_bool2 && meta.tmp_bool3 && meta.tmp_bool4) {
                     meta.match = true;
-                    update_time_on_match(meta.index);
+                    update_time_on_match(hdr.metadata.index);
                 }
                 else {
                     meta.match = false;
-                    update_time_on_mismatch(meta.index);
+                    update_time_on_mismatch(hdr.metadata.index);
                 }
             }
             else if (meta.transition_type == 1) {
                 if(!meta.tmp_bool3) {
                     // eport is not keep by switch
-                    meta.way_out = 2;
+                    meta.transition_type = 5;
                     meta.ingress_end = true;
                 }
                 else if(meta.tmp_bool1 && meta.tmp_bool2) {
-                    update_time_on_match(meta.index);
+                    update_time_on_match(hdr.metadata.index);
                     // it is not necessary to update_time_on_mismatch
                 }
                 else {
                     // eport is keep by switch but id mismatch
-                    meta.way_out = 0;
+                    meta.transition_type = 7;
                     meta.ingress_end = true;
                 }    
+            }
+            else if (meta.transition_type == 6) {
+                write_time(hdr.metadata.index);
+                meta.ingress_end = true; 
             }
         }
         
@@ -958,34 +889,32 @@ control IngressP(
                     
                     hdr.ipv4.src_addr = NAT_ADDR;
                     if(meta.is_tcp) 
-                        hdr.tcp.src_port = meta.reg_map.eport;
+                        hdr.tcp.src_port = hdr.metadata.switch_port;
                     else
-                        hdr.udp.src_port = meta.reg_map.eport;
+                        hdr.udp.src_port = hdr.metadata.switch_port;
 
-                    meta.way_out = 1;
                     meta.ingress_end = true;
                 }
                 else {
                     //为什么加这个就会出现未分配？？？？？？？？？？？？？？？？？？？？？？
-                    meta.way_out = 2;
+                    meta.transition_type = 4;
                     meta.ingress_end = true;
                 }
             }
             else if (meta.transition_type == 1) {
                 if(!meta.timeout) {
                     // reverse_translate
-                    hdr.ipv4.dst_addr = meta.reg_map.id.src_addr;
+                    hdr.ipv4.dst_addr = hdr.metadata.src_addr;
                     if(meta.is_tcp)
-                        hdr.tcp.dst_port = meta.reg_map.id.src_port;
+                        hdr.tcp.dst_port = hdr.metadata.src_port;
                     else
-                        hdr.udp.dst_port = meta.reg_map.id.src_port;
+                        hdr.udp.dst_port = hdr.metadata.src_port;
 
-                    meta.way_out = 1;
                     meta.ingress_end = true;
                 }
                 else {
                     // aging
-                    meta.way_out = 0;
+                    meta.transition_type = 7;
                     meta.ingress_end = true;
                 }  
             }
