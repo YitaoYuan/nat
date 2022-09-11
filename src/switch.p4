@@ -136,7 +136,6 @@ struct metadata {
     /* ingress.get_transition_type -> ingress */
     bit<3>          transition_type;    // 0:in->out/nfv, 1:out->in/nfv, 2:nfv->out, 3:nfv->in, 4:in->nfv, 5:out->nfv, 6:update, 7:drop
     index_t         reverse_index;  
-    bool            reverse_eport_valid;
 
     /* ingress */
     bool            ingress_end;
@@ -321,41 +320,41 @@ control get_transition_type(
     Register<bit<16>, bit<16>>(1) help2;
     Register<bit<16>, bit<16>>(1) help3;// 所有RegisterAction共享SALU，一个Register只有一个SALU
 
-    RegisterAction<bit<16>, bit<16>, bit>(help1) reg_check_tcp_eport = {
-        void apply(inout bit<16> reg, out bit ret) {
+    RegisterAction<bit<16>, bit<16>, bit<3>>(help1) reg_check_tcp_eport = {
+        void apply(inout bit<16> reg, out bit<3> ret) {
             if(PORT_MIN <= hdr.tcp.dst_port && hdr.tcp.dst_port <= PORT_MAX)
-                ret = 1;
+                ret = 7;// drop
             else 
                 ret = 0;
         }
     };
-    RegisterAction<bit<16>, bit<16>, bit>(help2) reg_check_udp_eport = {
-        void apply(inout bit<16> reg, out bit ret) {
+    RegisterAction<bit<16>, bit<16>, bit<3>>(help2) reg_check_udp_eport = {
+        void apply(inout bit<16> reg, out bit<3> ret) {
             if(PORT_MIN <= hdr.udp.dst_port && hdr.udp.dst_port <= PORT_MAX)
-                ret = 1;
+                ret = 7;
             else 
                 ret = 0;
         }
     };
-    RegisterAction<bit<16>, bit<16>, bit>(help3) reg_check_update_eport = {
-        void apply(inout bit<16> reg, out bit ret) {
+    RegisterAction<bit<16>, bit<16>, bit<3>>(help3) reg_check_update_eport = {
+        void apply(inout bit<16> reg, out bit<3> ret) {
             if(PORT_MIN <= hdr.metadata.switch_port && hdr.metadata.switch_port <= PORT_MAX)
-                ret = 1;
+                ret = 7;
             else 
                 ret = 0;
         }
     };
 
     action check_tcp_eport() {
-        meta.reverse_eport_valid = (bool)reg_check_tcp_eport.execute(0);
+        meta.transition_type = meta.transition_type | reg_check_tcp_eport.execute(0);
     }
 
     action check_udp_eport() {
-        meta.reverse_eport_valid = (bool)reg_check_udp_eport.execute(0);
+        meta.transition_type = meta.transition_type | reg_check_udp_eport.execute(0);
     }
 
     action check_update_eport() {
-        meta.reverse_eport_valid = (bool)reg_check_update_eport.execute(0);
+        meta.transition_type = meta.transition_type | reg_check_update_eport.execute(0);
     }
 
     apply {
@@ -372,9 +371,6 @@ control get_transition_type(
         else if(meta.transition_type == 6) {
             check_update_eport();
             meta.reverse_index = hdr.metadata.switch_port - PORT_MIN;
-        }
-        else {
-            meta.reverse_eport_valid = true;
         }
     }
 }
@@ -410,13 +406,14 @@ control send_out(
         ig_intr_dprs_md.drop_ctl = 0x1;
     }
 
-    action ipv4_forward(bit<9> port, mac_addr_t dmac) {
+    action ipv4_forward(bit<9> port, mac_addr_t smac, mac_addr_t dmac) {
         ig_intr_tm_md.ucast_egress_port = port;
+        hdr.ethernet.src_addr = smac;
         hdr.ethernet.dst_addr = dmac;
         hdr.ipv4.ttl = hdr.ipv4.ttl - 1;
     }
 
-    table ip2port_dmac{
+    table ip2port_mac{
         key = {
             hdr.ipv4.dst_addr: lpm;
         }
@@ -433,7 +430,7 @@ control send_out(
             hdr.metadata.setInvalid();
             hdr.ethernet.ether_type = TYPE_IPV4;
 
-            ip2port_dmac.apply();
+            ip2port_mac.apply();
             //port2smac.apply();
         }
         else if((meta.transition_type & 6) == 4){// 4, 5
@@ -778,17 +775,24 @@ control IngressP(
             meta.ingress_end = false;// 这是唯一一个false赋值，用于初始化
         }
 
-        // 检查反向流的eport合法性，顺便做一些初始化
+        // 检查反向流的eport合法性，顺便做一些初始化，同时读写version
         if(meta.ingress_end == false) {
-            if(!meta.reverse_eport_valid) {
-                meta.transition_type = 7;
+            if(meta.transition_type == 7) {//这里是因为get_transition_type里没有对ingress_end赋值
                 meta.ingress_end = true;
             }
             else if((meta.transition_type & 0b110) == 2) {// 2/3 直接结束
                 meta.ingress_end = true;
             }
-            else if((meta.transition_type & 0b110) == 0) {// 0/1，让所有包都有hdr.metadata
+            else if(meta.transition_type == 0) {// 0/1，让所有包都有hdr.metadata
                 hdr.metadata.setValid();
+
+                get_index_and_read_version();// 0的index在这里获得
+            }
+            else if(meta.transition_type == 1) {
+                hdr.metadata.setValid();
+            }
+            else if(meta.transition_type == 6) {
+                update_version(hdr.metadata.index);
             }
         }
         
@@ -798,14 +802,16 @@ control IngressP(
         /// In the following statements, only packet with type 0/1/6 can enter an "if" 
 
         // register "version"
+        /*
         if(meta.ingress_end == false) {
             if (meta.transition_type == 0) {//反向流不需要version
-                get_index_and_read_version();// 0的index在这里获得
+                
             }
             else if(meta.transition_type == 6) {
-                update_version(hdr.metadata.index);
+                
             }
         }
+        */
 
         // register "reverse_map"
         if(meta.ingress_end == false) {
