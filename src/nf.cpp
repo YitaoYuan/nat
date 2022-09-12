@@ -144,14 +144,15 @@ struct wait_entry_t{
  * All these constants are in host's byte order
  */
 
-const ip_addr_t LAN_ADDR_START = SHARED_LAN_ADDR_START;
-const ip_addr_t LAN_ADDR_END = SHARED_LAN_ADDR_END;// not included
+const ip_addr_t LAN_ADDR = SHARED_LAN_ADDR;
+const ip_addr_t LAN_ADDR_MASK = SHARED_LAN_ADDR_MASK;
 const ip_addr_t NAT_ADDR = SHARED_NAT_ADDR;
 
 const port_t PORT_MIN = SHARED_PORT_MIN;
-const u32 PORT_MAX = SHARED_PORT_MAX;// not included
+const port_t PORT_MAX = SHARED_PORT_MAX;// included
+const port_t TOTAL_PORT_NUM = PORT_MAX - PORT_MIN + 1;
 const port_t SWITCH_PORT_NUM = SHARED_SWITCH_PORT_NUM;
-const port_t NFV_PORT_NUM = PORT_MAX - PORT_MIN - SWITCH_PORT_NUM;
+const port_t NFV_PORT_NUM = TOTAL_PORT_NUM - SWITCH_PORT_NUM;
 
 const u32 AGING_TIME_US = SHARED_AGING_TIME_US;
 const u32 WAIT_TIME_US = 10000;// 10 ms
@@ -176,14 +177,15 @@ const u8 SWITCH_INNER_MAC[6] = {0, 0, 0, 0, 0, SHARED_SWITCH_INNER_MAC};
 const u8 NFV_INNER_MAC[6] = {0, 0, 0, 0, 0, SHARED_NFV_INNER_MAC};
 
 pcap_t *device;
-
+// for regular packet
 u8 buf[max_frame_size] __attribute__ ((aligned (64)));
+// for updating message
 u8 metadata_buf[sizeof(ethernet_t) + sizeof(nat_metadata_t)] __attribute__ ((aligned (64)));
 /*
  * all bytes in these data structure are in network order
  */
 unordered_map<flow_id_t, list_entry_t*, Hash>map;
-list_entry_t reverse_map[PORT_MAX - PORT_MIN];
+list_entry_t reverse_map[PORT_MAX - PORT_MIN + 1];
 list_entry_t avail_port_leader_data, inuse_port_leader_data, sw_port_leader_data;
 list_entry_t *avail_port_leader, *inuse_port_leader, *sw_port_leader;
 //如果要追求通用性的话，reverse_map就应该用list而不是数组，map直接映射到iterator
@@ -214,7 +216,7 @@ struct heavy_hitter_t{
         int i;
         for(i = 0; i < size; i++) if(entry[i].id == id) break;
         if(i >= size) {
-            if(i == HEAVY_HITTER_SIZE) i--;
+            if(i == HEAVY_HITTER_SIZE) i--;//满了就用最后一个
             else size++;
             entry[i].id = id;
         }
@@ -329,7 +331,7 @@ void nfv_init()
         list_insert_before(sw_port_leader, entry);
     }
         
-    for(port_t port = PORT_MIN + SWITCH_PORT_NUM; port < PORT_MAX; port++) {
+    for(port_t port = PORT_MIN + SWITCH_PORT_NUM; port <= PORT_MAX; port++) {
         list_entry_t *entry = port_host_to_entry(port);
         entry->type = list_type::avail;
         list_insert_before(avail_port_leader, entry);
@@ -425,7 +427,7 @@ void send_update(port_t index)
     hdr->metadata.nfv_time_net = htonl(wait_set[index].first_req_time_host);// not necessary to convert
 
     hdr->metadata.checksum = 0;// clear to recalculate
-    hdr->metadata.checksum = make_zero_negative(htons(compute_checksum(hdr->metadata)));
+    hdr->metadata.checksum = htons(make_zero_negative(compute_checksum(hdr->metadata)));
 
     hdr->ethernet.ether_type = htons(TYPE_METADATA);
     send_back(hdr, sizeof(hdr->ethernet) + sizeof(hdr->metadata));
@@ -581,7 +583,7 @@ void backward_process(mytime_t timestamp, len_t packet_len, hdr_t * const hdr)
     else return;
     port_t eport_h = ntohs(eport_n);
 
-    if(eport_h <= PORT_MIN || eport_h >= PORT_MAX) return;
+    if(eport_h < PORT_MIN || eport_h > PORT_MAX) return;
 
     list_entry_t *entry = port_host_to_entry(eport_h);
     if(entry->type != list_type::inuse) return;
@@ -591,8 +593,11 @@ void backward_process(mytime_t timestamp, len_t packet_len, hdr_t * const hdr)
     if(flow_id.dst_addr != src_addr || flow_id.dst_port != src_port 
         || flow_id.protocol != hdr->ip.protocol)
         return; // drop on mismatch
+
+    /*
     auto it = map.find(flow_id);
     assert(it != map.end() && it->second == entry);// because it is in use
+    */
     
 // refresh flow's timestamp
     entry->timestamp_host = timestamp;
@@ -727,9 +732,11 @@ void update_wait_set(mytime_t timestamp)
 void nat_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
 {
     do_aging(timestamp);
-    if(memcmp(hdr->ethernet.src_addr, SWITCH_INNER_MAC, sizeof(hdr->ethernet.src_addr)) != 0 ||
+    /*if(memcmp(hdr->ethernet.src_addr, SWITCH_INNER_MAC, sizeof(hdr->ethernet.src_addr)) != 0 ||
         memcmp(hdr->ethernet.dst_addr, NFV_INNER_MAC, sizeof(hdr->ethernet.dst_addr)) != 0)
         return;
+    // I don't want to check MAC address
+    */
     if(hdr->ethernet.ether_type != htons(TYPE_METADATA)) 
         return;
 
@@ -742,7 +749,7 @@ void nat_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
         ack_process(timestamp, packet_len, hdr);
     else if(hdr->metadata.is_to_out && !hdr->metadata.is_to_in) 
         forward_process(timestamp, packet_len, hdr);
-    else if(hdr->metadata.is_to_in && !hdr->metadata.is_to_out) 
+    else if(hdr->metadata.is_to_in && !hdr->metadata.is_to_out && !hdr->metadata.is_update) 
         backward_process(timestamp, packet_len, (hdr_t *) hdr);
 }
 

@@ -496,8 +496,6 @@ control IngressP(
         inout ingress_intrinsic_metadata_for_deparser_t ig_intr_dprs_md,
         inout ingress_intrinsic_metadata_for_tm_t ig_intr_tm_md) {
 
-    
-
     Hash<index_t>(HashAlgorithm_t.CRC16) hashmap;
     
     Register<bit<32>, index_t>((bit<32>)SWITCH_PORT_NUM, 0) map3;
@@ -510,7 +508,6 @@ control IngressP(
 
     Register<version_t, index_t>((bit<32>)SWITCH_PORT_NUM, 0) version;
     Register<index_t, index_t>((bit<32>)TOTAL_PORT_NUM, 0) reverse_map;
-    Register<bit<8>, index_t>(1) help;
 
     RegisterAction<bit<32>, index_t, bit<32>>(map3) reg_map3_read = {
         void apply(inout bit<32> reg, out bit<32> ret) {
@@ -687,7 +684,7 @@ control IngressP(
     }
 
     action get_time() {
-        meta.time = (bit<32>)ig_intr_md.ingress_mac_tstamp;// truncate
+        meta.time = ig_intr_md.ingress_mac_tstamp[41:10];// truncate
     }    
 
     action get_smac(mac_addr_t smac) {
