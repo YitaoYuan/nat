@@ -696,48 +696,7 @@ control IngressP(
         meta.time = ig_intr_md.ingress_mac_tstamp[41:10];// truncate
     }    
 
-    /*
-    // for test
 
-    action myadd(out bit<32> z, in bit<32> x, in bit<32> y) {
-        z = x + y;
-    }
-    
-    Hash<bit<32>>(HashAlgorithm_t.CRC32) myhash1;
-    Hash<bit<32>>(HashAlgorithm_t.CRC32) myhash2;
-    Hash<bit<32>>(HashAlgorithm_t.CRC32) myhash3;
-    Register<bit<32>, bit<32>>((bit<32>)SWITCH_PORT_NUM, 0) mymap1;
-    Register<bit<32>, bit<32>>((bit<32>)SWITCH_PORT_NUM, 0) mymap2;
-
-    RegisterAction <bit<32>, bit<32>, bit<32>> (mymap1) myaction1 = {
-        void apply(inout bit<32> reg, out bit<32> ret) {
-            ret = reg;
-            reg = hdr.ipv4.src_addr;
-        }
-    };
-
-    RegisterAction <bit<32>, bit<32>, bit<32>> (mymap2) myaction2 = {
-        void apply(inout bit<32> reg, out bit<32> ret) {
-            ret = reg;
-            reg = hdr.ipv4.src_addr;
-        }
-    };
-
-    action set_eport(bit<9> eport) {
-        ig_intr_tm_md.ucast_egress_port = eport;
-    }
-
-    table ip2port_dmac{
-        key = {
-            hdr.ipv4.dst_addr: exact;
-        }
-        actions = {
-            set_eport;
-        }
-        size = 16;
-        default_action = set_eport(0);
-    }
-    */
     action set_nf_port(bit<9> port) {
         meta.nf_port = port;
     }
@@ -751,15 +710,6 @@ control IngressP(
     }
     
     apply {
-        //ip2port_dmac.apply();
-        //bit<32> tmp;
-        //myadd(tmp, hdr.ipv4.src_addr, hdr.ipv4.dst_addr);
-        //myadd(hdr.ipv4.src_addr, hdr.ipv4.dst_addr, hdr.ipv4.src_addr);
-        //bit<32>tmp1 = myhash1.get({hdr.ipv4.dst_addr}, 0, 128);
-        //bit<32>tmp2 = myaction1.execute(tmp1);
-        //hdr.ipv4.src_addr = myaction2.execute(tmp2);
-
-        
         // bypass_egress
         ig_intr_tm_md.bypass_egress = true;
 
