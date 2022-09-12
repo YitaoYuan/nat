@@ -130,7 +130,7 @@ struct metadata {
 
     bool            metadata_checksum_correct;
     bool            ipv4_checksum_correct;
-    bit<16>         L4_neg_partial_checksum;
+    bit<16>         L4_partial_complement_sum;
     
 
     /* ingress.get_transition_type -> ingress */
@@ -151,6 +151,7 @@ struct metadata {
 
     bit             match;
     version_t       version_diff;
+    bool            update_udp_checksum;
 
     /* ingress checksum -> egress checksum */
     bool            tmp_bool0;
@@ -268,6 +269,7 @@ parser ParserI(packet_in packet,
         ipv4_csum.add(hdr.ipv4);
         meta.ipv4_checksum_correct = ipv4_csum.verify();
         L4_csum.subtract({hdr.ipv4.src_addr, hdr.ipv4.dst_addr});
+        
         // fill id
         meta.id.src_addr = hdr.ipv4.src_addr;
         meta.id.dst_addr = hdr.ipv4.dst_addr;
@@ -282,8 +284,9 @@ parser ParserI(packet_in packet,
 
     state parse_tcp {
         packet.extract(hdr.tcp);
-        L4_csum.subtract({hdr.tcp.src_port, hdr.tcp.dst_port});
-        meta.L4_neg_partial_checksum = L4_csum.get();
+        // The result is complement sum of all fields except src_port & dst_port. (Of course, "checksum" is not in "all")
+        L4_csum.subtract({hdr.tcp.src_port, hdr.tcp.dst_port, hdr.tcp.checksum});
+        meta.L4_partial_complement_sum = L4_csum.get();
         meta.is_tcp = true;
 
         // fill id
@@ -295,8 +298,8 @@ parser ParserI(packet_in packet,
 
     state parse_udp {
         packet.extract(hdr.udp);
-        L4_csum.subtract({hdr.udp.src_port, hdr.udp.dst_port});
-        meta.L4_neg_partial_checksum = L4_csum.get();
+        L4_csum.subtract({hdr.udp.src_port, hdr.udp.dst_port, hdr.udp.checksum});
+        meta.L4_partial_complement_sum = L4_csum.get();
         meta.is_tcp = false;
 
         // fill id
@@ -426,6 +429,13 @@ control send_out(
     }
 
     apply {
+        if(hdr.udp.isValid() && hdr.udp.checksum != 0) 
+            meta.update_udp_checksum = true;
+        else
+            meta.update_udp_checksum = false;
+
+        meta.L4_partial_complement_sum = ~meta.L4_partial_complement_sum;
+
         if((meta.transition_type & 4) == 0) {// 0, 1, 2, 3
             hdr.metadata.setInvalid();
             hdr.ethernet.ether_type = TYPE_IPV4;
@@ -461,21 +471,21 @@ control send_out(
             
             if(meta.transition_type == 4) {
                 //hdr.metadata.switch_port = meta.reg_map.eport;
+                //hdr.metadata.version
 
                 if(meta.timeout_byte == 0) 
                     hdr.metadata.type = 8w0b010_00000;
                 else 
                     hdr.metadata.type = 8w0b011_00000;
-
-                //hdr.metadata.version
+                
                 //hdr.metadata.index
             }
             else if(meta.transition_type == 5){
                 hdr.metadata.switch_port = 0;
+                hdr.metadata.version = 0;
 
                 hdr.metadata.type = 8w0b100_00000;
 
-                hdr.metadata.version = 0;
                 hdr.metadata.index = 0;
             }
         }
@@ -686,21 +696,6 @@ control IngressP(
     action get_time() {
         meta.time = ig_intr_md.ingress_mac_tstamp[41:10];// truncate
     }    
-
-    action get_smac(mac_addr_t smac) {
-        hdr.ethernet.src_addr = smac;
-    }
-
-    table port2smac{
-        key = {
-            ig_intr_tm_md.ucast_egress_port: exact;
-        }
-        actions = {
-            get_smac;
-        }
-        size = 16;
-    }
-
 
     /*
     // for test
@@ -1095,31 +1090,26 @@ control MyComputeChecksum(inout headers hdr, in metadata meta) {
     Checksum<bit<16>>(HashAlgorithm_t.CSUM16) csum16;
 
     apply {
-        /*
-        if(meta.update_metadata) {
+        if(hdr.metadata.isValid()) {
             hdr.metadata.checksum = csum16.update(
                 {hdr.metadata.src_addr, 
                 hdr.metadata.dst_addr, 
                 hdr.metadata.src_port, 
                 hdr.metadata.dst_port, 
                 hdr.metadata.protocol,
-                hdr.metadata.zero1,
+                hdr.metadata.zero,
 
                 hdr.metadata.switch_port,
 
                 hdr.metadata.version,
-
-                hdr.metadata.is_to_in,
-                hdr.metadata.is_to_out,
-                hdr.metadata.is_update,
-                hdr.metadata.zero2,
+                hdr.metadata.type,
 
                 hdr.metadata.index,
                 hdr.metadata.nfv_time}
             );
         }
         
-        if(meta.update_ip) {
+        if(hdr.ipv4.isValid()) {
             hdr.ipv4.checksum = csum16.update(
                 {hdr.ipv4.version,
                 hdr.ipv4.ihl,
@@ -1132,47 +1122,30 @@ control MyComputeChecksum(inout headers hdr, in metadata meta) {
                 hdr.ipv4.dst_addr}
             );
         }
-        bit<32> checksum;
         
-        if(meta.update_tcp) {
-            checksum = (bit<32>)csum16.update(
+        if(hdr.tcp.isValid()) {
+            hdr.tcp.checksum = csum16.update(
                 {hdr.ipv4.src_addr, 
                 hdr.ipv4.dst_addr,
-                8w0,
-                hdr.ipv4.protocol,
-                meta.L4_length,
 
                 hdr.tcp.src_port,
                 hdr.tcp.dst_port,
-                hdr.tcp.unused1,
-                hdr.tcp.unused2}
+
+                meta.L4_partial_complement_sum}
             );
-            checksum = (bit<32>)hdr.tcp.checksum + (checksum + (bit<32>)(0xffff^meta.L4_checksum_partial));
-            checksum = (checksum & 0xffff) + (checksum >> 16);
-            checksum = (checksum & 0xffff) + (checksum >> 16);
-            if(checksum == 0) checksum = 0xffff;
-            hdr.tcp.checksum = (bit<16>)checksum;
         }
         
-        if(meta.update_udp) {
-            checksum = (bit<32>)csum16.update(
+        if(meta.update_udp_checksum) {
+            hdr.udp.checksum = csum16.update(
                 {hdr.ipv4.src_addr, 
                 hdr.ipv4.dst_addr,
-                8w0,
-                hdr.ipv4.protocol,
-                meta.L4_length,
 
                 hdr.udp.src_port,
                 hdr.udp.dst_port,
-                hdr.udp.unused}
+
+                meta.L4_partial_complement_sum}
             );
-            checksum = (bit<32>)hdr.udp.checksum + (checksum + (bit<32>)(0xffff^meta.L4_checksum_partial));
-            checksum = (checksum & 0xffff) + (checksum >> 16);
-            checksum = (checksum & 0xffff) + (checksum >> 16);
-            if(checksum == 0) checksum = 0xffff;
-            hdr.udp.checksum = (bit<16>)checksum;
         }
-        */
     }
 }
 
