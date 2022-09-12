@@ -15,8 +15,6 @@ typedef bit<16> index_t;
 typedef bit<32> time_t;
 typedef bit<8> version_t;
 
-const bit<9>  NFV_PORT = 2;
-
 const bit<8>  TCP_PROTOCOL = 0x06;
 const bit<8>  UDP_PROTOCOL = 0x11;
 const bit<8>  ICMP_PROTOCOL = 0x01;
@@ -37,7 +35,7 @@ const port_t TOTAL_PORT_NUM = SHARED_PORT_MAX - SHARED_PORT_MIN + 1;
 const time_t AGING_TIME_US = SHARED_AGING_TIME_US;// 1 s
 
 const mac_addr_t SWITCH_INNER_MAC = SHARED_SWITCH_INNER_MAC;
-const mac_addr_t NFV_INNER_MAC = SHARED_NFV_INNER_MAC;
+const mac_addr_t NF_INNER_MAC = SHARED_NF_INNER_MAC;
 
 /*************************************************************************
 *********************** H E A D E R S  ***********************************
@@ -64,7 +62,7 @@ header nat_metadata_t {//26
     
 
     index_t     index; // index is the hash value of flow id
-    time_t      nfv_time;// 因为一个ACK返回的时候wait_entry可能已经没了，所以时间需要记录在packet里
+    time_t      nf_time;// 因为一个ACK返回的时候wait_entry可能已经没了，所以时间需要记录在packet里
     bit<16>     checksum;
 }
 
@@ -132,9 +130,10 @@ struct metadata {
     bool            ipv4_checksum_correct;
     bit<16>         L4_partial_complement_sum;
     
+    bit<9>          nf_port;
 
     /* ingress.get_transition_type -> ingress */
-    bit<3>          transition_type;    // 0:in->out/nfv, 1:out->in/nfv, 2:nfv->out, 3:nfv->in, 4:in->nfv, 5:out->nfv, 6:update, 7:drop
+    bit<3>          transition_type;    // 0:in->out/nf, 1:out->in/nf, 2:nf->out, 3:nf->in, 4:in->nf, 5:out->nf, 6:update, 7:drop
     index_t         reverse_index;  
 
     /* ingress */
@@ -197,10 +196,9 @@ parser ParserI(packet_in packet,
 
     state parse_ethernet {
         packet.extract(hdr.ethernet);
-        transition select(ig_intr_md.ingress_port ++ hdr.ethernet.ether_type) {//没检查MAC addr，没必要
-            NFV_PORT ++ TYPE_METADATA                   :   parse_metadata;
-            NFV_PORT ++ TYPE_IPV4                       :   reject;
-            (9w0 ++ TYPE_IPV4) &&& (9w0 ++ 16w0xffff)   :   parse_ipv4_with_transition_type;
+        transition select(hdr.ethernet.ether_type) {//没检查MAC addr，没必要
+            TYPE_METADATA   :   parse_metadata;
+            TYPE_IPV4       :   parse_ipv4_with_transition_type;
         }
     }
 
@@ -269,7 +267,7 @@ parser ParserI(packet_in packet,
         ipv4_csum.add(hdr.ipv4);
         meta.ipv4_checksum_correct = ipv4_csum.verify();
         L4_csum.subtract({hdr.ipv4.src_addr, hdr.ipv4.dst_addr});
-        
+
         // fill id
         meta.id.src_addr = hdr.ipv4.src_addr;
         meta.id.dst_addr = hdr.ipv4.dst_addr;
@@ -314,7 +312,8 @@ parser ParserI(packet_in packet,
 /*************************************************************************
 **************  I N G R E S S   P R O C E S S I N G   *******************
 *************************************************************************/
-control get_transition_type(
+
+control get_reverse_index(
         inout headers hdr,
         inout metadata meta,
         in ingress_intrinsic_metadata_t ig_intr_md) {
@@ -464,10 +463,10 @@ control send_out(
             
             //hdr.metadata.version = version;
             //hdr.metadata.index = index;
-            hdr.metadata.nfv_time = 0;
+            hdr.metadata.nf_time = 0;
             hdr.metadata.checksum = 0;
             
-            ig_intr_tm_md.ucast_egress_port = NFV_PORT;
+            ig_intr_tm_md.ucast_egress_port = meta.nf_port;
             
             if(meta.transition_type == 4) {
                 //hdr.metadata.switch_port = meta.reg_map.eport;
@@ -490,7 +489,7 @@ control send_out(
             }
         }
         else if(meta.transition_type == 6) {
-            ig_intr_tm_md.ucast_egress_port = NFV_PORT;
+            ig_intr_tm_md.ucast_egress_port = meta.nf_port;
         }
         else if(meta.transition_type == 7) {
             drop();
@@ -739,7 +738,17 @@ control IngressP(
         default_action = set_eport(0);
     }
     */
-    
+    action set_nf_port(bit<9> port) {
+        meta.nf_port = port;
+    }
+
+    table get_nf_port {
+        actions = {
+            set_nf_port();
+        }
+        size = 1;
+        default_action = set_nf_port(11);
+    }
     
     apply {
         //ip2port_dmac.apply();
@@ -763,7 +772,8 @@ control IngressP(
         }
         else {
             // 检查反向流的eport合法性
-            get_transition_type.apply(hdr, meta, ig_intr_md);
+            get_reverse_index.apply(hdr, meta, ig_intr_md);
+            get_nf_port.apply();
             meta.ingress_end = false;// 这是唯一一个false赋值，用于初始化
         }
 
@@ -1023,7 +1033,7 @@ control IngressP(
             else {
                 read_version(meta.index);
                 set_metadata(true);
-                send_to_NFV();
+                send_to_NF();
             }        
         }
         else if(meta.transition_type == 3) {
@@ -1062,7 +1072,7 @@ control IngressP(
                 //reverse_map_clear(meta.reg_map.eport - PORT_MIN);
             }
 
-            send_to_NFV();
+            send_to_NF();
         }
         
         
@@ -1071,7 +1081,7 @@ control IngressP(
         meta.update_tcp = hdr.tcp.isValid();
         meta.update_udp = hdr.udp.isValid() && (hdr.udp.checksum != 0);
 
-        if(ig_intr_tm_md.ucast_egress_port != NFV_PORT) {
+        if(ig_intr_tm_md.ucast_egress_port != NF_PORT) {
             hdr.metadata.setInvalid();
             hdr.ethernet.ether_type = TYPE_IPV4;
             port2smac.apply();
@@ -1105,7 +1115,7 @@ control MyComputeChecksum(inout headers hdr, in metadata meta) {
                 hdr.metadata.type,
 
                 hdr.metadata.index,
-                hdr.metadata.nfv_time}
+                hdr.metadata.nf_time}
             );
         }
         

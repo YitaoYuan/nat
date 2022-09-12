@@ -68,7 +68,7 @@ struct nat_metadata_t{
     u8          is_to_out : 1;
     u8          is_to_in  : 1;
     port_t      index;
-    mytime_t    nfv_time_net;
+    mytime_t    nf_time_net;
     checksum_t  checksum;
 }__attribute__ ((__packed__));
 
@@ -144,15 +144,13 @@ struct wait_entry_t{
  * All these constants are in host's byte order
  */
 
-const ip_addr_t LAN_ADDR = SHARED_LAN_ADDR;
-const ip_addr_t LAN_ADDR_MASK = SHARED_LAN_ADDR_MASK;
 const ip_addr_t NAT_ADDR = SHARED_NAT_ADDR;
 
 const port_t PORT_MIN = SHARED_PORT_MIN;
 const port_t PORT_MAX = SHARED_PORT_MAX;// included
 const port_t TOTAL_PORT_NUM = PORT_MAX - PORT_MIN + 1;
 const port_t SWITCH_PORT_NUM = SHARED_SWITCH_PORT_NUM;
-const port_t NFV_PORT_NUM = TOTAL_PORT_NUM - SWITCH_PORT_NUM;
+const port_t NF_PORT_NUM = TOTAL_PORT_NUM - SWITCH_PORT_NUM;
 
 const u32 AGING_TIME_US = SHARED_AGING_TIME_US;
 const u32 WAIT_TIME_US = 10000;// 10 ms
@@ -172,9 +170,9 @@ const u32 HEAVY_HITTER_REBOOT_THRESHOLD = 128;
  */
 
 static_assert(SHARED_SWITCH_INNER_MAC < 256u, "");
-static_assert(SHARED_NFV_INNER_MAC < 256u, "");
+static_assert(SHARED_NF_INNER_MAC < 256u, "");
 const u8 SWITCH_INNER_MAC[6] = {0, 0, 0, 0, 0, SHARED_SWITCH_INNER_MAC};
-const u8 NFV_INNER_MAC[6] = {0, 0, 0, 0, 0, SHARED_NFV_INNER_MAC};
+const u8 NF_INNER_MAC[6] = {0, 0, 0, 0, 0, SHARED_NF_INNER_MAC};
 
 pcap_t *device;
 // for regular packet
@@ -316,7 +314,7 @@ void print_map(flow_id_t id, port_t eport_host, port_t index)
     );
 }
 
-void nfv_init()
+void nf_init()
 {
     avail_port_leader = &avail_port_leader_data;
     inuse_port_leader = &inuse_port_leader_data;
@@ -404,14 +402,14 @@ void send_back(hdr_t * hdr, size_t len)
 {
     //debug_printf("send_back\n");
     memcpy(hdr->ethernet.dst_addr, SWITCH_INNER_MAC, sizeof(hdr->ethernet.dst_addr));
-    memcpy(hdr->ethernet.src_addr, NFV_INNER_MAC, sizeof(hdr->ethernet.src_addr));
+    memcpy(hdr->ethernet.src_addr, NF_INNER_MAC, sizeof(hdr->ethernet.src_addr));
     pcap_sendpacket(device, (u_char *)hdr, len);
 }
 
 void send_update(port_t index)
 {
     hdr_t *hdr = (hdr_t *)metadata_buf;
-    // MAC address is useless between nfv & switch
+    // MAC address is useless between nf & switch
 
     hdr->metadata.id = wait_set[index].map.id;
     hdr->metadata.switch_port = wait_set[index].map.eport;
@@ -424,7 +422,7 @@ void send_update(port_t index)
 
     hdr->metadata.index = htons(index);
 
-    hdr->metadata.nfv_time_net = htonl(wait_set[index].first_req_time_host);// not necessary to convert
+    hdr->metadata.nf_time_net = htonl(wait_set[index].first_req_time_host);// not necessary to convert
 
     hdr->metadata.checksum = 0;// clear to recalculate
     hdr->metadata.checksum = htons(make_zero_negative(compute_checksum(hdr->metadata)));
@@ -635,7 +633,7 @@ void ack_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
     // only hdr.ethernet & hdr.metadata is valid
     assert(hdr->metadata.is_update);
     
-    if(timestamp - ntohl(hdr->metadata.nfv_time_net) > AGING_TIME_US / 2) return;
+    if(timestamp - ntohl(hdr->metadata.nf_time_net) > AGING_TIME_US / 2) return;
     //debug_printf("1\n");
     port_t index = ntohs(hdr->metadata.index);
     if(index >= SWITCH_PORT_NUM) return; // if checksum is right, this could not happen
@@ -650,19 +648,19 @@ void ack_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
         return;
     //debug_printf("4\n");
     list_entry_t *entry_sw = port_host_to_entry(ntohs(wait_entry->switch_port));
-    list_entry_t *entry_nfv = port_host_to_entry(ntohs(wait_entry->map.eport));
+    list_entry_t *entry_nf = port_host_to_entry(ntohs(wait_entry->map.eport));
 
-    assert(entry_sw->type == list_type::sw && entry_nfv->type == list_type::inuse);
+    assert(entry_sw->type == list_type::sw && entry_nf->type == list_type::inuse);
 
     entry_sw->is_waiting = 0;// this assignment is useless
-    entry_nfv->is_waiting = 0;
+    entry_nf->is_waiting = 0;
     wait_entry->is_waiting = 0;
 
     entry_sw->type = list_type::avail;
-    entry_nfv->type = list_type::sw;
+    entry_nf->type = list_type::sw;
 
     list_move_to_back(avail_port_leader, entry_sw);// sw->avail
-    list_move_to_back(sw_port_leader, entry_nfv);// inuse->sw
+    list_move_to_back(sw_port_leader, entry_nf);// inuse->sw
     list_erase(wait_entry);
 
     debug_printf("\nreceive ACK\n");
@@ -733,7 +731,7 @@ void nat_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
 {
     do_aging(timestamp);
     /*if(memcmp(hdr->ethernet.src_addr, SWITCH_INNER_MAC, sizeof(hdr->ethernet.src_addr)) != 0 ||
-        memcmp(hdr->ethernet.dst_addr, NFV_INNER_MAC, sizeof(hdr->ethernet.dst_addr)) != 0)
+        memcmp(hdr->ethernet.dst_addr, NF_INNER_MAC, sizeof(hdr->ethernet.dst_addr)) != 0)
         return;
     // I don't want to check MAC address
     */
@@ -772,7 +770,7 @@ int main(int argc, char **argv)
 {
     assert((long long)buf % 64 == 0);
     if(argc != 2) {
-        printf("Usage: nfv ifname\n");
+        printf("Usage: nf ifname\n");
         return 0;
     }
     char *dev_name = argv[1];
@@ -787,7 +785,7 @@ int main(int argc, char **argv)
 
     signal(SIGINT, stop);
 
-    nfv_init();
+    nf_init();
 
     pcap_setnonblock(device, 1, errbuf);
     while(1) {
