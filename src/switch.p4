@@ -122,6 +122,11 @@ enum bit<2> hdr_type_t {
     meta_only = 3
 }
 
+header nf_port_hdr_t{
+    bit<9>  nf_port;
+    bit<7>  unused;
+}
+
 struct metadata {
     /* parser -> ingress */
     bool            is_tcp;
@@ -130,7 +135,7 @@ struct metadata {
     bool            ipv4_checksum_correct;
     bit<16>         L4_partial_complement_sum;
     
-    bit<9>          nf_port;
+    nf_port_hdr_t   nf_port_hdr;
 
     /* ingress.get_transition_type -> ingress */
     bit<3>          transition_type;    // 0:in->out/nf, 1:out->in/nf, 2:nf->out, 3:nf->in, 4:in->nf, 5:out->nf, 6:update, 7:drop
@@ -177,20 +182,13 @@ parser ParserI(packet_in packet,
 
     state start {
         packet.extract(ig_intr_md);
-        transition parse_port_metadata;
+        transition select(ig_intr_md.resubmit_flag) {
+            0 : parse_port_metadata;
+        }
     }
 
-
     state parse_port_metadata {
-        //packet.extract(ig_md.port_md);
-        //packet.extract(meta);
-        packet.advance(64);
-#if __TARGET_TOFINO__ == 2
-	// We need to advance another 128 bits since t2na metadata
-    	// is of 192 bits in total and my_port_metadata_t only 
-	// consumes 64 bits
-        packet.advance(128);
-#endif
+        meta.nf_port_hdr = port_metadata_unpack<nf_port_hdr_t>(packet);
         transition parse_ethernet;
     }
 
@@ -239,8 +237,15 @@ parser ParserI(packet_in packet,
     state parse_sin {
         ipv4_t ip = packet.lookahead<ipv4_t>();
         transition select(ip.dst_addr) {
-            LAN_ADDR &&& LAN_ADDR_MASK  :   reject;
+            LAN_ADDR &&& LAN_ADDR_MASK  :   reject_parse_sin;
             default                     :   mark_type_0;
+        }
+    }
+
+    state reject_parse_sin {
+        ipv4_t ip = packet.lookahead<ipv4_t>();
+        transition select(ip.dst_addr) {
+            0 : accept;// this will never match
         }
     }
 
@@ -248,7 +253,6 @@ parser ParserI(packet_in packet,
         ipv4_t ip = packet.lookahead<ipv4_t>();
         transition select(ip.dst_addr) {
             NAT_ADDR    :   mark_type_1;
-            default     :   reject;
         }
     }
 
@@ -466,7 +470,7 @@ control send_out(
             hdr.metadata.nf_time = 0;
             hdr.metadata.checksum = 0;
             
-            ig_intr_tm_md.ucast_egress_port = meta.nf_port;
+            ig_intr_tm_md.ucast_egress_port = meta.nf_port_hdr.nf_port;
             
             if(meta.transition_type == 4) {
                 //hdr.metadata.switch_port = meta.reg_map.eport;
@@ -489,7 +493,7 @@ control send_out(
             }
         }
         else if(meta.transition_type == 6) {
-            ig_intr_tm_md.ucast_egress_port = meta.nf_port;
+            ig_intr_tm_md.ucast_egress_port = meta.nf_port_hdr.nf_port;
         }
         else if(meta.transition_type == 7) {
             drop();
@@ -695,19 +699,6 @@ control IngressP(
     action get_time() {
         meta.time = ig_intr_md.ingress_mac_tstamp[41:10];// truncate
     }    
-
-
-    action set_nf_port(bit<9> port) {
-        meta.nf_port = port;
-    }
-
-    table get_nf_port {
-        actions = {
-            set_nf_port();
-        }
-        size = 1;
-        default_action = set_nf_port(11);
-    }
     
     apply {
         // bypass_egress
@@ -723,7 +714,6 @@ control IngressP(
         else {
             // 检查反向流的eport合法性
             get_reverse_index.apply(hdr, meta, ig_intr_md);
-            get_nf_port.apply();
             meta.ingress_end = false;// 这是唯一一个false赋值，用于初始化
         }
 
