@@ -717,6 +717,14 @@ control IngressP(
             meta.ingress_end = false;// 这是唯一一个false赋值，用于初始化
         }
 
+        if(meta.transition_type == 7) {
+            ig_intr_dprs_md.drop_ctl = 1;
+        }
+        else {
+            ig_intr_tm_md.ucast_egress_port = ig_intr_md.ingress_port;
+        }
+
+        /*
         // 检查反向流的eport合法性，顺便做一些初始化，同时读写version
         if(meta.ingress_end == false) {
             if(meta.transition_type == 7) {//这里是因为get_transition_type里没有对ingress_end赋值
@@ -742,18 +750,6 @@ control IngressP(
 
         /// Packet with type 2,3 ends here 
         /// In the following statements, only packet with type 0/1/6 can enter an "if" 
-
-        // register "version"
-        /*
-        if(meta.ingress_end == false) {
-            if (meta.transition_type == 0) {//反向流不需要version
-                
-            }
-            else if(meta.transition_type == 6) {
-                
-            }
-        }
-        */
 
         // register "reverse_map"
         if(meta.ingress_end == false) {
@@ -942,7 +938,7 @@ control IngressP(
         /// packet with type 0,1,4 ends here 
 
         send_out.apply(hdr, meta, ig_intr_dprs_md, ig_intr_tm_md);
-        
+        */
         
         
             
@@ -1040,6 +1036,7 @@ control MyComputeChecksum(inout headers hdr, in metadata meta) {
     Checksum<bit<16>>(HashAlgorithm_t.CSUM16) csum16;
 
     apply {
+        /*
         if(hdr.metadata.isValid()) {
             hdr.metadata.checksum = csum16.update(
                 {hdr.metadata.src_addr, 
@@ -1096,6 +1093,7 @@ control MyComputeChecksum(inout headers hdr, in metadata meta) {
                 meta.L4_partial_complement_sum}
             );
         }
+        */
     }
 }
 
