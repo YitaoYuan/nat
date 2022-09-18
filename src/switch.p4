@@ -122,7 +122,7 @@ enum bit<2> hdr_type_t {
     meta_only = 3
 }
 
-header nf_port_hdr_t{
+struct nf_port_t{
     bit<9>  nf_port;
     bit<7>  unused;
 }
@@ -135,7 +135,7 @@ struct metadata {
     bool            ipv4_checksum_correct;
     bit<16>         L4_partial_complement_sum;
     
-    nf_port_hdr_t   nf_port_hdr;
+    nf_port_t   nf_port_hdr;
 
     /* ingress.get_transition_type -> ingress */
     bit<3>          transition_type;    // 0:in->out/nf, 1:out->in/nf, 2:nf->out, 3:nf->in, 4:in->nf, 5:out->nf, 6:update, 7:drop
@@ -188,12 +188,13 @@ parser ParserI(packet_in packet,
     }
 
     state parse_port_metadata {
-        meta.nf_port_hdr = port_metadata_unpack<nf_port_hdr_t>(packet);
+        meta.nf_port_hdr = port_metadata_unpack<nf_port_t>(packet);
         transition parse_ethernet;
     }
 
     state parse_ethernet {
         packet.extract(hdr.ethernet);
+
         transition select(hdr.ethernet.ether_type) {//没检查MAC addr，没必要
             TYPE_METADATA   :   parse_metadata;
             TYPE_IPV4       :   parse_ipv4_with_transition_type;
@@ -352,15 +353,21 @@ control get_reverse_index(
     };
 
     action check_tcp_eport() {
-        meta.transition_type = meta.transition_type | reg_check_tcp_eport.execute(0);
+        bit<3>tmp = reg_check_tcp_eport.execute(0);
+        meta.transition_type = meta.transition_type | tmp;
+        meta.ingress_end = (bool)tmp[0:0];
     }
 
     action check_udp_eport() {
-        meta.transition_type = meta.transition_type | reg_check_udp_eport.execute(0);
+        bit<3>tmp = reg_check_udp_eport.execute(0);
+        meta.transition_type = meta.transition_type | tmp;
+        meta.ingress_end = (bool)tmp[0:0];
     }
 
     action check_update_eport() {
-        meta.transition_type = meta.transition_type | reg_check_update_eport.execute(0);
+        bit<3>tmp = reg_check_update_eport.execute(0);
+        meta.transition_type = meta.transition_type | tmp;
+        meta.ingress_end = (bool)tmp[0:0];
     }
 
     apply {
@@ -714,15 +721,22 @@ control IngressP(
         else {
             // 检查反向流的eport合法性
             get_reverse_index.apply(hdr, meta, ig_intr_md);
-            meta.ingress_end = false;// 这是唯一一个false赋值，用于初始化
+            //meta.ingress_end = false;// 这是唯一一个false赋值，用于初始化
         }
-
-        if(meta.transition_type == 7) {
+        /*
+        if(meta.ingress_end) {
             ig_intr_dprs_md.drop_ctl = 1;
         }
-        else {
+        else {*/
+            
+            //if(ig_intr_prsr_md.parser_err != 0) {
+                bit<48> tmp = hdr.ethernet.src_addr;
+                hdr.ethernet.src_addr = hdr.ethernet.dst_addr;
+                hdr.ethernet.dst_addr = tmp;
+            //}
+
             ig_intr_tm_md.ucast_egress_port = ig_intr_md.ingress_port;
-        }
+        //}
 
         /*
         // 检查反向流的eport合法性，顺便做一些初始化，同时读写version
@@ -1114,11 +1128,12 @@ control DeparserI(
     }
 }
 
-parser ParserE(packet_in b,
+parser ParserE(packet_in packet,
                out headers hdr,
                out metadata meta,
                out egress_intrinsic_metadata_t eg_intr_md) {
     state start {
+        //packet.extract(eg_intr_md);//这一句和bypass_egress必有其一，否则包会被丢
         transition accept;
     }
 }

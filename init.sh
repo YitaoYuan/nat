@@ -4,6 +4,10 @@ set -e
 
 DIR=`cd $(dirname $0); pwd`
 
+echo "Find and kill previous process"
+
+$DIR/kill_nat_switch.sh
+
 echo "Boot switch in the background"
 
 $SDE/run_switchd.sh -p nat >/dev/null 2>&1 &
