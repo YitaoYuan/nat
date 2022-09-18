@@ -8,7 +8,7 @@
 #define bufsize 1024
 
 const int server_port = 12345;
-const char server_ip[20] = "192.168.22.3"; 
+const char server_ip[20] = "192.168.2.3"; 
 char buf[bufsize + 1];
 
 int main(void)
