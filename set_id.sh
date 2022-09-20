@@ -34,7 +34,7 @@ fi
 (
 set -x
 sudo ip addr replace $LOCAL_NET_ADDR.$ID dev $IF #replace = add or change
-sudo ip link set enp178s0f0 up
+sudo ip link set $IF up
 )
 
 set +e #grep will return 1 on mismatch
@@ -73,5 +73,10 @@ MAC_TAIL=0$ID
 
 (
 set -x
-sudo sudo arp -i enp178s0f0 -s $LOCAL_NET_ADDR.254 $MAC_PREFIX:$MAC_TAIL
+sudo arp -i $IF -s $LOCAL_NET_ADDR.254 $MAC_PREFIX:$MAC_TAIL
+)
+
+(
+set -x
+sudo ethtool -K $IF tx off 
 )
