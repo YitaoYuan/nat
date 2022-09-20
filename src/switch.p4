@@ -747,30 +747,10 @@ control IngressP(
             get_reverse_index.apply(hdr, meta, ig_intr_md);
             //meta.ingress_end = false;// 这是唯一一个false赋值，用于初始化
         }
-        /*
-        if(meta.ingress_end) {
-            //ig_intr_dprs_md.drop_ctl = 1;
-            ig_intr_tm_md.ucast_egress_port = ig_intr_md.ingress_port;
-        }
-        else {
-            bit<48> tmp = hdr.ethernet.src_addr;
-            hdr.ethernet.src_addr = hdr.ethernet.dst_addr;
-            hdr.ethernet.dst_addr = tmp;
-
-            ig_intr_tm_md.ucast_egress_port = ig_intr_md.ingress_port;
-        }
-        */
-
         
         // 检查反向流的eport合法性，顺便做一些初始化，同时读写version
         if(meta.ingress_end == false) {
-            if(meta.transition_type == 7) {//这里是因为get_transition_type里没有对ingress_end赋值
-                meta.ingress_end = true;
-            }
-            else if((meta.transition_type & 0b110) == 2) {// 2/3 直接结束
-                meta.ingress_end = true;
-            }
-            else if(meta.transition_type == 0) {// 0/1，让所有包都有hdr.metadata
+            if(meta.transition_type == 0) {// 0/1，让所有包都有hdr.metadata
                 hdr.metadata.setValid();
 
                 get_index_and_read_version();// 0的index在这里获得
@@ -778,15 +758,15 @@ control IngressP(
             else if(meta.transition_type == 1) {
                 hdr.metadata.setValid();
             }
+            else if((meta.transition_type & 0b110) == 2) {// 2/3 直接结束
+                meta.ingress_end = true;
+            }
             else if(meta.transition_type == 6) {
                 update_version(hdr.metadata.index);
             }
         }
 
-        
-        
         get_time();
-
         /// Packet with type 2,3 ends here 
         /// In the following statements, only packet with type 0/1/6 can enter an "if" 
 
@@ -809,7 +789,7 @@ control IngressP(
                 }   
             }
         }
-
+        
         // register "map"
         // RegisterAction会两两合并
         if(meta.ingress_end == false) {
@@ -836,6 +816,20 @@ control IngressP(
             else if((hdr.metadata.index & 7) == 6) meta.index_lo_mask = 0b0100_0000;
             else if((hdr.metadata.index & 7) == 7) meta.index_lo_mask = 0b1000_0000;
         }
+
+        /*
+        if(meta.ingress_end) {
+            //ig_intr_dprs_md.drop_ctl = 1;
+            ig_intr_tm_md.ucast_egress_port = ig_intr_md.ingress_port;
+        }
+        else {
+            hdr.ethernet.src_addr = (bit<48>)ig_intr_md.ingress_port;
+
+            meta.update_udp_checksum = true;
+
+            ig_intr_tm_md.ucast_egress_port = ig_intr_md.ingress_port;
+        }
+        */
         
         // matching
         
@@ -1118,7 +1112,6 @@ control MyComputeChecksum(inout headers hdr, in metadata meta) {
             );
         }
         
-        /*
         if(meta.update_udp_checksum) {
             hdr.udp.checksum = csum16.update(
                 {meta.checksum_helper,
@@ -1128,7 +1121,6 @@ control MyComputeChecksum(inout headers hdr, in metadata meta) {
                 hdr.udp.dst_port}
             );
         }
-        */
     }
 }
 

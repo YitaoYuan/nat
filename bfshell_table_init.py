@@ -1,5 +1,0 @@
-bfrt.nat.ParserI.PORT_METADATA.add(9, 10)
-bfrt.nat.ParserI.PORT_METADATA.add(10, 10)
-bfrt.nat.ParserI.PORT_METADATA.add(11, 10)
-bfrt.nat.IngressP.send_out.ip2port_mac.add_with_ipv4_forward(0xC0A80001, 32, 9, 0x0101, 0x0201)
-bfrt.nat.IngressP.send_out.ip2port_mac.add_with_ipv4_forward(0xC0A80203, 32, 11, 0x0103, 0x0203)

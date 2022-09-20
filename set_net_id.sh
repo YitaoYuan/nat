@@ -62,13 +62,7 @@ else
 	echo "Already have route entry: $REMOTE_NET_ADDR.0/24 gw $LOCAL_NET_ADDR.254"
 fi
 
-MAC_PREFIX=
-if [ $1 == "LAN" ]
-then
-	MAC_PREFIX=00:00:00:00:00
-else
-	MAC_PREFIX=00:00:00:00:01
-fi
+MAC_PREFIX=00:00:00:00:01
 MAC_TAIL=0$ID
 
 (
@@ -76,7 +70,7 @@ set -x
 sudo arp -i $IF -s $LOCAL_NET_ADDR.254 $MAC_PREFIX:$MAC_TAIL
 )
 
-(
-set -x
-sudo ethtool -K $IF tx off 
-)
+#(
+#set -x
+#sudo ethtool -K $IF tx off 
+#)
