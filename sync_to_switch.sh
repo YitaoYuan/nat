@@ -2,5 +2,5 @@
 
 DIR=$(dirname $0)
 
-scp ${DIR}/src/* switch:~/yyt/nat/src/
-scp ${DIR}/*.* switch:~/yyt/nat/
+rsync -rv -e ssh --exclude "build*" --exclude "tmp*" --exclude ".*" -r $DIR switch:~/yyt/nat
+

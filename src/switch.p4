@@ -134,7 +134,7 @@ struct metadata {
     /* parser -> ingress */
     bool            is_tcp;
 
-    bool            metadata_checksum_correct;
+    bool            metadata_checksum_err;
     //bit<16>         L4_partial_complement_sum;
     checksum_helper_t   checksum_helper;
     
@@ -149,6 +149,7 @@ struct metadata {
 
     index_t         index_hi;
     bit<8>          index_lo_mask;
+    bit<8>          inv_index_lo_mask;
     bit<8>          timeout_byte;
 
     // packet info
@@ -212,7 +213,7 @@ parser ParserI(packet_in packet,
     state parse_metadata {
         packet.extract(hdr.metadata);
         metadata_csum.add(hdr.metadata);
-        meta.metadata_checksum_correct = metadata_csum.verify();
+        meta.metadata_checksum_err = metadata_csum.verify();
         transition select(hdr.metadata.type) {
             8w0b010_00000 :   mark_type_2;
             8w0b100_00000 :   mark_type_3;
@@ -345,25 +346,25 @@ control get_reverse_index(
     RegisterAction<bit<16>, bit<16>, bit<3>>(help1) reg_check_tcp_eport = {
         void apply(inout bit<16> reg, out bit<3> ret) {
             if(PORT_MIN <= hdr.tcp.dst_port && hdr.tcp.dst_port <= PORT_MAX)
-                ret = 7;// drop
-            else 
                 ret = 0;
+            else 
+                ret = 7;// drop
         }
     };
     RegisterAction<bit<16>, bit<16>, bit<3>>(help2) reg_check_udp_eport = {
         void apply(inout bit<16> reg, out bit<3> ret) {
             if(PORT_MIN <= hdr.udp.dst_port && hdr.udp.dst_port <= PORT_MAX)
-                ret = 7;
-            else 
                 ret = 0;
+            else 
+                ret = 7;
         }
     };
     RegisterAction<bit<16>, bit<16>, bit<3>>(help3) reg_check_update_eport = {
         void apply(inout bit<16> reg, out bit<3> ret) {
             if(PORT_MIN <= hdr.metadata.switch_port && hdr.metadata.switch_port <= PORT_MAX)
-                ret = 7;
-            else 
                 ret = 0;
+            else 
+                ret = 7;
         }
     };
 
@@ -401,26 +402,6 @@ control get_reverse_index(
         else {
             meta.ingress_end = false;
         }
-    }
-}
-
-control get_id(
-        in headers hdr,
-        inout metadata meta)
-{
-    apply {
-        if(meta.is_tcp) {
-            meta.id.src_port = hdr.tcp.src_port;
-            meta.id.dst_port = hdr.tcp.dst_port;
-        }
-        else {
-            meta.id.src_port = hdr.udp.src_port;
-            meta.id.dst_port = hdr.udp.dst_port;
-        }
-        meta.id.src_addr = hdr.ipv4.src_addr;
-        meta.id.dst_addr = hdr.ipv4.dst_addr;
-        meta.id.protocol = hdr.ipv4.protocol;
-        meta.id.zero = 0;
     }
 }
 
@@ -514,6 +495,8 @@ control send_out(
             }
         }
         else if(meta.transition_type == 6) {
+            hdr.ethernet.src_addr = 48w1;
+            hdr.ethernet.dst_addr = 48w2;
             ig_intr_tm_md.ucast_egress_port = meta.nf_port_hdr.nf_port;
         }
         else if(meta.transition_type == 7) {
@@ -599,23 +582,24 @@ control IngressP(
 
     RegisterAction<bit<8>, index_t, bit<8>>(timeout_history) reg_update_timeout_history = {
         void apply(inout bit<8> reg_timeout_history, out bit<8> ret) {
+            // meta.timeout_byte:
+            // 0xff -> clear 
+            // 1<<X -> set
+            // 0 -> no effect
             if(meta.timeout_byte == 0xff){// clear
-#define BUG
-#ifdef BUG
-                reg_timeout_history = meta.index_lo_mask | ~reg_timeout_history;
-#else 
-                reg_timeout_history = (~meta.index_lo_mask) & reg_timeout_history;//这个编译出来有问题啊，应该是andca，怎么会是orca呢
-#endif
+                reg_timeout_history = meta.inv_index_lo_mask & reg_timeout_history;
+//#define BUG
+//#ifdef BUG
+//                reg_timeout_history = meta.index_lo_mask | ~reg_timeout_history;
+//#else 
+//                reg_timeout_history = ~meta.index_lo_mask & reg_timeout_history;//这个编译出来有问题啊，应该是andca，怎么会是orca呢
+//#endif
             }
             else {// meta.timeout_byte has 1 bit of 1, or meta.timeout_byte == 0
                 reg_timeout_history = meta.timeout_byte | reg_timeout_history;
             }
-            if(meta.timeout_byte == 0)
-                ret = meta.index_lo_mask & reg_timeout_history;//zero, or non-zero
-            else 
-                ret = 0xff;
-
-                // it will also return meta.index_lo_mask when meta.timeout_byte == 0xff, however it's OK.
+            ret = meta.timeout_byte | reg_timeout_history;
+            // it will also return a value when meta.timeout_byte == 0xff, however it's OK.
         }
     };
 
@@ -699,7 +683,7 @@ control IngressP(
 
     action get_index_and_read_version() {
         ipv4_flow_id_t id = meta.id;
-        bit<16>index = hashmap.get({id.src_addr, id.dst_addr, id.src_port, id.dst_port, id.protocol, id.zero}, 
+        bit<16>index = hashmap.get({id.src_addr, id.dst_addr, id.src_port, id.dst_port, id.protocol, id.zero}, //这个不能改成id，不然会炸
                                 (index_t)0, (index_t)SWITCH_PORT_NUM);
         hdr.metadata.index = index;                
         hdr.metadata.version = reg_read_version.execute(index);
@@ -729,6 +713,12 @@ control IngressP(
         meta.checksum_helper.neg_checksum = ~meta.checksum_helper.neg_checksum;
     }
 
+    action debug() {
+        ig_intr_tm_md.ucast_egress_port = ig_intr_md.ingress_port;
+        ig_intr_dprs_md.drop_ctl = 0;
+        hdr.ethernet.src_addr = (bit<48>)meta.transition_type;
+    }
+
     apply {
         // bypass_egress
         ig_intr_tm_md.bypass_egress = true;
@@ -736,9 +726,11 @@ control IngressP(
         // make it negative
         checksum_helper();
 
+        
         // 检查parse和checksum
+        
         if(ig_intr_prsr_md.parser_err != 0 ||                               // parse error
-            (hdr.metadata.isValid() && !meta.metadata_checksum_correct)) {  // metadata checksum error
+            (hdr.metadata.isValid() && meta.metadata_checksum_err)) {  // metadata checksum error
             meta.transition_type = 7;
             meta.ingress_end = true;
         }
@@ -747,7 +739,7 @@ control IngressP(
             get_reverse_index.apply(hdr, meta, ig_intr_md);
             //meta.ingress_end = false;// 这是唯一一个false赋值，用于初始化
         }
-        
+
         // 检查反向流的eport合法性，顺便做一些初始化，同时读写version
         if(meta.ingress_end == false) {
             if(meta.transition_type == 0) {// 0/1，让所有包都有hdr.metadata
@@ -780,7 +772,7 @@ control IngressP(
                     reverse_map_write(meta.reverse_index);
                 }
 
-                if(meta.version_diff == 0) {
+                if(meta.version_diff == 0) {//别用else if，上面的RegisterAction是一套逻辑
                     meta.ingress_end = true;   
                 }
                 else if(meta.version_diff != 1){
@@ -793,6 +785,18 @@ control IngressP(
         // register "map"
         // RegisterAction会两两合并
         if(meta.ingress_end == false) {
+            // for type 0/1/6
+            meta.index_hi = hdr.metadata.index >> 3;
+            //inv_index_lo_mask写在后一个stage会莫名多一个stage，所以我给写一块了
+            if((hdr.metadata.index & 7) == 0) {meta.index_lo_mask = 8w1<<0; meta.inv_index_lo_mask = ~(8w1<<0);}
+            else if((hdr.metadata.index & 7) == 1) {meta.index_lo_mask = 8w1<<1; meta.inv_index_lo_mask = ~(8w1<<1);}
+            else if((hdr.metadata.index & 7) == 2) {meta.index_lo_mask = 8w1<<2; meta.inv_index_lo_mask = ~(8w1<<2);}
+            else if((hdr.metadata.index & 7) == 3) {meta.index_lo_mask = 8w1<<3; meta.inv_index_lo_mask = ~(8w1<<3);}
+            else if((hdr.metadata.index & 7) == 4) {meta.index_lo_mask = 8w1<<4; meta.inv_index_lo_mask = ~(8w1<<4);}
+            else if((hdr.metadata.index & 7) == 5) {meta.index_lo_mask = 8w1<<5; meta.inv_index_lo_mask = ~(8w1<<5);}
+            else if((hdr.metadata.index & 7) == 6) {meta.index_lo_mask = 8w1<<6; meta.inv_index_lo_mask = ~(8w1<<6);}
+            else if((hdr.metadata.index & 7) == 7) {meta.index_lo_mask = 8w1<<7; meta.inv_index_lo_mask = ~(8w1<<7);}
+
             if ((meta.transition_type & 0b110) == 0) {//type 0/1
                 map3_read(hdr.metadata.index);
                 map2_read(hdr.metadata.index);
@@ -805,16 +809,6 @@ control IngressP(
                 map1_write(hdr.metadata.index);
                 map0_write(hdr.metadata.index);
             }
-            // for type 0/1/6
-            meta.index_hi = hdr.metadata.index >> 3;
-            if((hdr.metadata.index & 7) == 0) meta.index_lo_mask = 0b0000_0001;
-            else if((hdr.metadata.index & 7) == 1) meta.index_lo_mask = 0b0000_0010;
-            else if((hdr.metadata.index & 7) == 2) meta.index_lo_mask = 0b0000_0100;
-            else if((hdr.metadata.index & 7) == 3) meta.index_lo_mask = 0b0000_1000;
-            else if((hdr.metadata.index & 7) == 4) meta.index_lo_mask = 0b0001_0000;
-            else if((hdr.metadata.index & 7) == 5) meta.index_lo_mask = 0b0010_0000;
-            else if((hdr.metadata.index & 7) == 6) meta.index_lo_mask = 0b0100_0000;
-            else if((hdr.metadata.index & 7) == 7) meta.index_lo_mask = 0b1000_0000;
         }
 
         /*
@@ -834,6 +828,8 @@ control IngressP(
         // matching
         
         if(meta.ingress_end == false) {
+            // for type 0/1/6
+            //meta.inv_index_lo_mask = ~meta.index_lo_mask;
 
             if (meta.transition_type == 0) {
 
@@ -913,7 +909,7 @@ control IngressP(
             if(meta.transition_type == 6) {
                 update_time_mark_overwrite(hdr.metadata.index);
             }
-            else {
+            else {// type 0/1
                 update_time_mark_timeout(hdr.metadata.index, meta.index_lo_mask);
             }
         }
@@ -970,8 +966,13 @@ control IngressP(
 
         /// packet with type 0,1,4 ends here 
 
+        //meta.nf_port_hdr.nf_port = ig_intr_md.ingress_port;
+
         send_out.apply(hdr, meta, ig_intr_dprs_md, ig_intr_tm_md);
+
         
+        
+        //debug();
         
         
             

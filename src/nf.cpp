@@ -323,13 +323,15 @@ void nf_init()
     inuse_port_leader->l = inuse_port_leader->r = inuse_port_leader;
     sw_port_leader->l = sw_port_leader->r = sw_port_leader;
     
+    /*
     for(port_t port = PORT_MIN; port < PORT_MIN + SWITCH_PORT_NUM; port++) {
         list_entry_t *entry = port_host_to_entry(port);
         entry->type = list_type::sw;
         list_insert_before(sw_port_leader, entry);
     }
+    */
         
-    for(port_t port = PORT_MIN + SWITCH_PORT_NUM; port <= PORT_MAX; port++) {
+    for(port_t port = PORT_MIN; port <= PORT_MAX; port++) {
         list_entry_t *entry = port_host_to_entry(port);
         entry->type = list_type::avail;
         list_insert_before(avail_port_leader, entry);
@@ -647,19 +649,32 @@ void ack_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
         wait_entry->version != hdr->metadata.version) 
         return;
     //debug_printf("4\n");
-    list_entry_t *entry_sw = port_host_to_entry(ntohs(wait_entry->switch_port));
+
+    list_entry_t *entry_sw = NULL;
+    if(wait_entry->switch_port != 0) {
+        entry_sw = port_host_to_entry(ntohs(wait_entry->switch_port));
+    }
     list_entry_t *entry_nf = port_host_to_entry(ntohs(wait_entry->map.eport));
 
-    assert(entry_sw->type == list_type::sw && entry_nf->type == list_type::inuse);
+    if(entry_sw != NULL) {
+        assert(entry_sw->type == list_type::sw);
+    }
+    assert(entry_nf->type == list_type::inuse);
 
-    entry_sw->is_waiting = 0;// this assignment is useless
+    if(entry_sw != NULL) {
+        entry_sw->is_waiting = 0;// this assignment is useless
+    }
     entry_nf->is_waiting = 0;
     wait_entry->is_waiting = 0;
 
-    entry_sw->type = list_type::avail;
+    if(entry_sw != NULL) {
+        entry_sw->type = list_type::avail;
+    }
     entry_nf->type = list_type::sw;
 
-    list_move_to_back(avail_port_leader, entry_sw);// sw->avail
+    if(entry_sw != NULL) {
+        list_move_to_back(avail_port_leader, entry_sw);// sw->avail
+    }
     list_move_to_back(sw_port_leader, entry_nf);// inuse->sw
     list_erase(wait_entry);
 

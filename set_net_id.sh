@@ -33,7 +33,9 @@ fi
 
 (
 set -x
-sudo ip addr replace $LOCAL_NET_ADDR.$ID dev $IF #replace = add or change
+sudo ip link set $IF down
+sudo ifconfig $IF $LOCAL_NET_ADDR.$ID netmask 255.255.255.0
+#sudo ip addr replace $LOCAL_NET_ADDR.$ID dev $IF #replace = add or change
 sudo ip link set $IF up
 )
 
