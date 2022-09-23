@@ -2,8 +2,17 @@
 
 # coding=utf-8
 import socket
+import sys
+
+if len(sys.argv) != 3:
+    print("Usage: python3 receive.py <receiver_ip> <receiver_port>")
+    sys.exit(1)
+
+ip = sys.argv[1]
+port = int(sys.argv[2])
+
 server=socket.socket(socket.AF_INET,socket.SOCK_DGRAM) # 基于网络的数据报协议 UDP
-server.bind(('192.168.2.3', 12345))
+server.bind((ip, port))
 
 while True:
     msg,addr=server.recvfrom(1024)
