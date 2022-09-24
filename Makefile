@@ -1,5 +1,5 @@
 
-all: build/nf build/switch_build_tag
+all: nf switch config
 
 DEPENDS=src/shared_metadata.h Makefile
 
@@ -9,6 +9,9 @@ build/nf: src/nf.cpp ${DEPENDS} | build
 build/switch_build_tag: src/switch.p4 ${DEPENDS} | build
 	./compile_for_tofino.sh && touch build/switch_build_tag
 
+bfrt_table_init.py: 
+	./config.sh
+
 build:
 	mkdir build
 
@@ -17,3 +20,10 @@ nf: build/nf
 
 .PHONY: switch
 switch: build/switch_build_tag
+
+.PHONY: config
+config: bfrt_table_init.py
+
+.PHONY: run
+run: switch config
+	./run.sh

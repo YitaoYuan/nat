@@ -1,0 +1,9 @@
+# format: "<server name> <QSFP connector number> <QSFP lane number> [LAN|WAN|NF]"
+# worker1~9 -> 9/0~17/0
+# at most 1 NF
+# LAN address = 192.168.0.0/24
+# WAN address = 192.168.2.0/24
+# switch port IP address = 192.168.X.254
+yyt@10.0.0.6 enp178s0f0 14 0 LAN 6
+yyt@10.0.0.7 enp178s0f0 15 0 WAN 7
+yyt@10.0.0.8 enp178s0f0 16 0 NF
