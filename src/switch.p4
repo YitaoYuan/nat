@@ -280,8 +280,9 @@ parser IngressParser(packet_in packet,
         meta.id.zero = 0;
 
         transition select(hdr.ipv4.protocol ++ hdr.ipv4.ihl) {
-            TCP_PROTOCOL ++ 4w5: parse_tcp;
-            UDP_PROTOCOL ++ 4w5: parse_udp;
+            TCP_PROTOCOL ++ 4w5 : parse_tcp;
+            UDP_PROTOCOL ++ 4w5 : parse_udp;
+            default             : parse_other_flow;
         }
     }
 
@@ -410,6 +411,7 @@ control check_eport(
 control send_out(
         inout headers hdr,
         inout metadata meta,
+        in ingress_intrinsic_metadata_t ig_intr_md,
         inout ingress_intrinsic_metadata_for_deparser_t ig_intr_dprs_md, 
         inout ingress_intrinsic_metadata_for_tm_t ig_intr_tm_md
         ) {
@@ -459,14 +461,13 @@ control send_out(
         else
             meta.update_udp_checksum = false;
 
-        if((meta.transition_type & 4) == 0) {// 0, 1, 2, 3
+        if((meta.transition_type & 0b1100) == 0) {// 0, 1, 2, 3
             hdr.metadata.setInvalid();
             hdr.ethernet.ether_type = TYPE_IPV4;
 
             ip2port_mac.apply();
-            //port2smac.apply();
         }
-        else if((meta.transition_type & 6) == 4){// 4, 5
+        else if((meta.transition_type & 0b1110) == 4){// 4, 5
             
             hdr.ethernet.ether_type = TYPE_METADATA;
             hdr.ethernet.src_addr = 48w1;
@@ -748,7 +749,6 @@ control Ingress(
         checksum_helper();
 
         // 检查parse和checksum
-        
         if(ig_intr_prsr_md.parser_err != 0 ||                               // parse error
             (hdr.metadata.isValid() && meta.metadata_checksum_err)) {  // metadata checksum error
             meta.transition_type = 7;
@@ -760,7 +760,7 @@ control Ingress(
             //meta.ingress_end = false;// 这是唯一一个false赋值，用于初始化
         }
         /// Packet with type 2,3 ends here 
-
+        
         // 检查反向流的eport合法性，顺便做一些初始化，同时读写version
         if(meta.ingress_end == false) {
             if(meta.transition_type == 0) {// 让所有包都有hdr.metadata
@@ -828,23 +828,8 @@ control Ingress(
                 map0_write(hdr.metadata.index);
             }
         }
-
-        /*
-        if(meta.ingress_end) {
-            //ig_intr_dprs_md.drop_ctl = 1;
-            ig_intr_tm_md.ucast_egress_port = ig_intr_md.ingress_port;
-        }
-        else {
-            hdr.ethernet.src_addr = (bit<48>)ig_intr_md.ingress_port;
-
-            meta.update_udp_checksum = true;
-
-            ig_intr_tm_md.ucast_egress_port = ig_intr_md.ingress_port;
-        }
-        */
         
         // matching
-        
         if(meta.ingress_end == false) {
             // for type 0/1/6
             //meta.inv_index_lo_mask = ~meta.index_lo_mask;
@@ -889,7 +874,6 @@ control Ingress(
             }
         }   
         
-            
         // 综合match的结果
         if(meta.ingress_end == false) {
             if (meta.transition_type == 0) {
@@ -986,8 +970,8 @@ control Ingress(
 
         //meta.nf_port_hdr.nf_port = ig_intr_md.ingress_port;
 
-        send_out.apply(hdr, meta, ig_intr_dprs_md, ig_intr_tm_md);
-
+        send_out.apply(hdr, meta, ig_intr_md, ig_intr_dprs_md, ig_intr_tm_md);
+        
         
         
         //debug();
