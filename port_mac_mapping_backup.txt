@@ -1,0 +1,24 @@
+# QSPF port, QSPF lane, worker name, asic port, switch port mac, worker NIC mac
+
+#13 0 worker1
+24, 0x6cec5a09d872, 0xb8599f1d04f2
+#14 0 worker2 
+16, 0x6cec5a09d876, 0xb8599f0b3072
+#12 0 worker3 
+32, 0x6cec5a09d86e, 0x98039b034650
+#11 0 worker4 
+40, 0x6cec5a09d86a, 0xb8599f020d14
+#17 0 worker5 
+4, 0x6cec5a09d882, 0xb8599fb02d50
+#16 0 worker6 
+0, 0x6cec5a09d87e, 0xb8599fb02bb0
+#15 0 worker7 
+8, 0x6cec5a09d87a, 0xb8599fb02bb8
+#20 0 worker8 
+20, 0x6cec5a09d88e, 0xb8599fb02d18
+#19 0 worker9 
+28, 0x6cec5a09d88a, 0xb8599fb02d58
+#21 0 worker21 
+44, 0x6cec5a09d892, 0x0c42a17ab668
+#23 0 worker22 
+60, 0x6cec5a09d89a, 0x0c42a17aca28

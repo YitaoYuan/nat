@@ -4,6 +4,33 @@
 # LAN address = 192.168.0.0/24
 # WAN address = 192.168.2.0/24
 # switch port IP address = 192.168.X.254
-yyt@10.0.0.6 enp178s0f0 14 0 LAN 6
+# in switch2: worker1-9,21,22
+# 0xb8599f1d04f2, 24, worker1
+# 0xb8599f0b3072, 16
+# 0x98039b034650, 32
+# 0xb8599f020d14, 40
+# 0xb8599fb02d50, 4
+# 0xb8599fb02bb0, 0
+# 0xb8599fb02bb8, 8
+# 0xb8599fb02d18, 20
+# 0xb8599fb02d58, 28, worker9
+# 0x0c42a17ab668, 44, worker21
+# 0x0c42a17aca28, 60, worker22
+
+#yyt@10.0.0.6 enp178s0f0 14 0 LAN 6
+#yyt@10.0.0.7 enp178s0f0 15 0 WAN 7
+#yyt@10.0.0.8 enp178s0f0 16 0 NF
+
+yyt@10.0.0.1 enp178s0f0 13 0 LAN 1
+yyt@10.0.0.2 enp178s0f0 14 0 LAN 2
+yyt@10.0.0.3 enp178s0f0 12 0 LAN 3
+yyt@10.0.0.4 enp178s0f0 11 0 LAN 4
+yyt@10.0.0.5 enp178s0f0 17 0 LAN 5
+yyt@10.0.0.6 enp178s0f0 16 0 LAN 6
 yyt@10.0.0.7 enp178s0f0 15 0 WAN 7
-yyt@10.0.0.8 enp178s0f0 16 0 NF
+yyt@10.0.0.8 enp178s0f0 20 0 NF 8
+yyt@10.0.0.9 enp178s0f0 19 0 LAN 9
+yyt@10.0.0.21 enp178s0f0 21 0 LAN 21
+yyt@10.0.0.22 enp178s0f0 23 0 LAN 22
+
+
