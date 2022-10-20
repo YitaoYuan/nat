@@ -3,23 +3,14 @@
 set -e 
 
 DIR=`cd $(dirname $0); pwd`
-PROGRAM=nat
 
 echo "Find and kill previous process"
 
-$DIR/kill.sh $PROGRAM
-
-sleep 0.1
-
-if [ -n "`pgrep bf_switchd`" ];
-then 
-    echo "Switch is being used by another program."
-    exit 1
-fi
+$DIR/kill_nat_switch.sh
 
 echo "Boot switch in the background"
 
-$SDE/run_switchd.sh -p $PROGRAM > /dev/null 2>&1 &
+$SDE/run_switchd.sh -p nat_test2 > /dev/null 2>&1 &
 
 if [ "$1" == "--skip-table" ]
 then
@@ -27,7 +18,7 @@ then
 else
 	echo -n "Initializing tables... "
 
-	$SDE/run_bfshell.sh -b ${DIR}/bfrt_table_init.py > /dev/null 2>&1
+	$SDE/run_bfshell.sh -b ${DIR}/bfrt_test2.py > /dev/null 2>&1
 
 	echo "Done"
 fi
