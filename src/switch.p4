@@ -234,8 +234,8 @@ parser IngressParser(packet_in packet,
     state parse_ipv4_from_WAN {
         ipv4_t ip = packet.lookahead<ipv4_t>();
         transition select(ip.dst_addr) {
-            LAN_ADDR &&& LAN_ADDR_MASK  :   maybe_type_1;// out->in
-            default                     :   parse_other_flow;// out->out
+            NAT_ADDR    :   maybe_type_1;// out->in
+            default     :   parse_other_flow;// out->out
         }
     }
 
@@ -415,19 +415,24 @@ control send_out(
         ig_intr_dprs_md.drop_ctl = 0x1;
     }
 
-    action ipv4_forward(bit<9> port, mac_addr_t smac, mac_addr_t dmac) {
+    action set_egress_port(in bit<9> port) {
+        ig_intr_dprs_md.drop_ctl = 0;//这个drop_ctl=0一定不能省略，不知道为什么，明明文档说初始化为0的
         ig_intr_tm_md.ucast_egress_port = port;
-        hdr.ethernet.src_addr = smac;
-        hdr.ethernet.dst_addr = dmac;
-        //hdr.ipv4.ttl = hdr.ipv4.ttl - 1;
     }
 
-    table ip2port_mac{
+    action l3_forward(bit<9> port, mac_addr_t smac, mac_addr_t dmac) {
+        set_egress_port(port);
+        hdr.ethernet.src_addr = smac;
+        hdr.ethernet.dst_addr = dmac;
+        hdr.ipv4.ttl = hdr.ipv4.ttl - 1;
+    }
+
+    table l3_forward_table{
         key = {
             hdr.ipv4.dst_addr: exact;
         }
         actions = {
-            ipv4_forward;
+            l3_forward;
             drop;
         }
         size = 32;
@@ -435,7 +440,7 @@ control send_out(
     }
 
     action l2_forward(bit<9> port) {
-        ig_intr_tm_md.ucast_egress_port = port;
+        set_egress_port(port);
     }
 
     table l2_forward_table{
@@ -460,7 +465,7 @@ control send_out(
             hdr.metadata.setInvalid();
             hdr.ethernet.ether_type = TYPE_IPV4;
 
-            ip2port_mac.apply();
+            l3_forward_table.apply();
         }
         else if((meta.transition_type & 0b1110) == 4){// 4, 5
             
@@ -486,7 +491,7 @@ control send_out(
             hdr.metadata.nf_time = 0;
             hdr.metadata.checksum = 0;
             
-            ig_intr_tm_md.ucast_egress_port = meta.nf_port_hdr.nf_port;
+            set_egress_port(meta.nf_port_hdr.nf_port);
             
             if(meta.transition_type == 4) {
                 //hdr.metadata.switch_port = meta.reg_map.eport;
@@ -511,7 +516,8 @@ control send_out(
         else if(meta.transition_type == 6) {
             hdr.ethernet.src_addr = 48w1;
             hdr.ethernet.dst_addr = 48w2;
-            ig_intr_tm_md.ucast_egress_port = meta.nf_port_hdr.nf_port;
+
+            set_egress_port(meta.nf_port_hdr.nf_port);
         }
         else if(meta.transition_type == 7) {
             drop();
@@ -714,12 +720,15 @@ control Ingress(
 
         //hdr.metadata.index = index;                
         //hdr.metadata.version = reg_read_version.execute(index);
-
-        hdr.metadata.version = reg_read_version.execute(hdr.metadata.index);
+        ipv4_flow_id_t id = meta.id;
+        index_t index = (index_t) hashmap.get({id.src_addr, id.dst_addr, id.src_port, id.dst_port, id.protocol, id.zero});
+        hdr.metadata.index = index;
+        hdr.metadata.version = reg_read_version.execute(index);
     }
 
     action update_version() {
         meta.version_diff = (bit<9>)reg_update_version.execute(hdr.metadata.index);
+        //hdr.metadata.index = 0xf;
     }
 
     action reverse_map_read() {
@@ -728,22 +737,12 @@ control Ingress(
 
     action reverse_map_write() {
         reg_reverse_map_read_or_update.execute(meta.reverse_index);
+        //hdr.metadata.index = 0xf;//////////////////////////////////////////////////
     }
 
     action get_time() {
         meta.time = ig_intr_md.ingress_mac_tstamp[41:10];// truncate
     }    
-
-    action drop() {
-        ig_intr_dprs_md.drop_ctl = 0x1;
-    }
-
-    action ipv4_forward(bit<9> port, mac_addr_t smac, mac_addr_t dmac) {
-        ig_intr_tm_md.ucast_egress_port = port;
-        hdr.ethernet.src_addr = smac;
-        hdr.ethernet.dst_addr = dmac;
-        //hdr.ipv4.ttl = hdr.ipv4.ttl - 1;
-    }
 
     apply {
         // bypass_egress
@@ -758,12 +757,9 @@ control Ingress(
         else {
             // 检查反向流的eport合法性
             check_eport.apply(hdr, meta, ig_intr_md);
-
-            ipv4_flow_id_t id = meta.id;
-            hdr.metadata.index = (bit<16>) hashmap.get({id.src_addr, id.dst_addr, id.src_port, id.dst_port, id.protocol, id.zero});
         }
         /// Packet with type 2,3,8 ends here 
-        
+
         // 检查反向流的eport合法性，顺便做一些初始化，同时读写version
         if(meta.ingress_end == false) {
             if(meta.transition_type == 0) {// 让所有包都有hdr.metadata
@@ -779,6 +775,9 @@ control Ingress(
                 update_version();
             }
         }
+
+        /////////////////////////// 在从这里到B点间的某个位置1号包被丢掉了
+        
 
         get_time();
         
@@ -801,6 +800,8 @@ control Ingress(
                 // _ : end, and drop
             }
         }
+
+        
         
         // register "map"
         // RegisterAction会两两合并
@@ -864,6 +865,7 @@ control Ingress(
                 meta.tmp_bool0 = false;
         }   
         */
+
         // 综合match的结果 
         ip4_addr_t src_addr_cmp;
         ip4_addr_t dst_addr_cmp;
@@ -872,6 +874,7 @@ control Ingress(
 
         meta.match = 1;
 
+        //就是这一块使得反射失败
         if (meta.transition_type == 0) {
             src_addr_cmp = hdr.metadata.src_addr;
             dst_addr_cmp = hdr.metadata.dst_addr;
@@ -901,7 +904,11 @@ control Ingress(
                 meta.match = 0;
         }
         //else For 6, match == 1
+
         
+        ///////////////////////////////////////////////////// B点
+
+
         /// packet with type 5 ends here 
 
         // register "time"
@@ -977,9 +984,15 @@ control Ingress(
                 }  
             }
         }
-
         /// packet with type 0,1,4 ends here 
 
+        /*if(meta.transition_type == 1) {
+            ig_intr_dprs_md.drop_ctl = 0;
+            //meta.update_udp_checksum = true;
+
+            ig_intr_tm_md.ucast_egress_port = ig_intr_md.ingress_port;
+            return;
+        }*/
         //meta.nf_port_hdr.nf_port = ig_intr_md.ingress_port;
         
         send_out.apply(hdr, meta, ig_intr_md, ig_intr_dprs_md, ig_intr_tm_md);

@@ -1,5 +1,8 @@
 #!/bin/bash
 
+echo "This script is in development. Exit."
+exit 1
+
 set -e
 
 switch="switch"

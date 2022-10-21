@@ -11,8 +11,11 @@ if len(sys.argv) != 3:
 ip = sys.argv[1]
 port = int(sys.argv[2])
 
+
 server=socket.socket(socket.AF_INET,socket.SOCK_DGRAM) # 基于网络的数据报协议 UDP
+server.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1)
 server.bind((ip, port))
+
 
 while True:
     msg,addr=server.recvfrom(1024)

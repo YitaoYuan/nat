@@ -108,9 +108,9 @@ struct hdr_t{
 };
 
 enum list_type: u8{
-    avail,
-    inuse,
-    sw
+    avail = 0,
+    inuse = 1,
+    sw = 2
 };
 
 struct list_entry_t{
@@ -636,19 +636,19 @@ void ack_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
     assert(hdr->metadata.is_update);
     
     if(timestamp - ntohl(hdr->metadata.nf_time_net) > AGING_TIME_US / 2) return;
-    //debug_printf("1\n");
+    debug_printf("1\n");
     port_t index = ntohs(hdr->metadata.index);
     if(index >= SWITCH_PORT_NUM) return; // if checksum is right, this could not happen
-    //debug_printf("2\n");
+    debug_printf("2\n");
     wait_entry_t *wait_entry = &wait_set[index];
     if(!wait_entry -> is_waiting) return; // Redundant ACK
-    //debug_printf("3\n");
+    debug_printf("3\n");
     // mismatch
     if(memcmp(&wait_entry->map.id, &hdr->metadata.id, sizeof(hdr->metadata.id)) != 0 ||
         wait_entry->map.eport != hdr->metadata.switch_port ||
         wait_entry->version != hdr->metadata.version) 
         return;
-    //debug_printf("4\n");
+    debug_printf("4\n");
 
     list_entry_t *entry_sw = NULL;
     if(wait_entry->switch_port != 0) {
@@ -657,7 +657,10 @@ void ack_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
     list_entry_t *entry_nf = port_host_to_entry(ntohs(wait_entry->map.eport));
 
     if(entry_sw != NULL) {
-        assert(entry_sw->type == list_type::sw);
+        if(entry_sw->type != list_type::sw) {
+            printf("%d\n", entry_sw->type);// print出来是avail
+        }
+        assert(entry_sw->type == list_type::sw);///////////////////////////这里还有问题///////////////////////////
     }
     assert(entry_nf->type == list_type::inuse);
 
@@ -677,6 +680,10 @@ void ack_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
     }
     list_move_to_back(sw_port_leader, entry_nf);// inuse->sw
     list_erase(wait_entry);
+
+    // bug fixed: we should erase entry in map
+    auto erase_res = map.erase(entry_nf->id);
+    assert(erase_res == 1); 
 
     debug_printf("\nreceive ACK\n");
     debug_printf("old switch port: %d\n", wait_set[index].switch_port);

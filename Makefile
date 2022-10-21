@@ -1,29 +1,32 @@
 
-all: nf switch config
+all: nf switch
 
 DEPENDS=src/shared_metadata.h Makefile
 
 build/nf: src/nf.cpp ${DEPENDS} | build
-	g++ $< -o $@ -std=c++11 -lpcap -g3 -Wall -Wextra -Wshadow -Wno-unused -Wno-address-of-packed-member
+	g++ $< -o $@ -std=c++11 -lpcap -O3 -Wall -Wextra -Wshadow -Wno-unused -Wno-address-of-packed-member
 
-build/switch_build_tag: src/switch.p4 ${DEPENDS} | build
-	./compile_for_tofino.sh && touch build/switch_build_tag
+build/nat/tofino/pipe/switch.bfa: src/switch.p4 ${DEPENDS} build/Makefile | build
+	cd build; make && make install
+	echo "Take up `cat $@ | grep -c stage` stages"
 
-bfrt_table_init.py: 
-	./config.sh
+build/Makefile: mycmake.sh | build
+	./mycmake.sh
 
 build:
-	mkdir build
+	mkdir -p build
+	
 
 .PHONY: nf 
 nf: build/nf
 
 .PHONY: switch
-switch: build/switch_build_tag
-
-.PHONY: config
-config: bfrt_table_init.py
+switch: build/nat/tofino/pipe/switch.bfa
 
 .PHONY: run
-run: switch config
+run: switch
 	./run.sh
+
+.PHONY: kill
+kill:
+	./kill_nat.sh
