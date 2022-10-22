@@ -550,7 +550,6 @@ void forward_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
     
 
 // send back
-send:
     send_back(hdr, packet_len);
 }
 
@@ -702,6 +701,8 @@ void do_aging(mytime_t timestamp)
         if(timestamp - entry->timestamp_host <= AGING_TIME_US) break;
 
         if(entry->is_waiting) continue;// wait to swap to switch
+
+        assert(entry->type == list_type::inuse);
 
         list_move_to_back(avail_port_leader, entry);
         entry->type = list_type::avail;

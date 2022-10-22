@@ -14,7 +14,8 @@ port = int(sys.argv[2])
 dst = (ip, port)
 
 client=socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1)
+client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+client.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024)
 
 while True:
     msg=input('>>: ').strip()

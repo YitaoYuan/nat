@@ -128,6 +128,7 @@ struct metadata {
     /* ingress.get_transition_type -> ingress */
     bit<4>          transition_type;    // 0:in->out/nf, 1:out->in/nf, 2:nf->out, 3:nf->in, 4:in->nf, 5:out->nf, 6:update, 7:drop
     index_t         reverse_index;  
+    index_t         tmp_index;
     //bool            mac_match;
 
     /* ingress */
@@ -420,7 +421,13 @@ control send_out(
         ig_intr_tm_md.ucast_egress_port = port;
     }
 
-    action l3_forward(bit<9> port, mac_addr_t smac, mac_addr_t dmac) {
+    action l3_forward_out(bit<9> port, mac_addr_t smac, mac_addr_t dmac) {
+        set_egress_port(port);
+        hdr.ethernet.src_addr = smac;
+        hdr.ethernet.dst_addr = dmac;
+    }
+
+    action l3_forward_in(bit<9> port, mac_addr_t smac, mac_addr_t dmac) {
         set_egress_port(port);
         hdr.ethernet.src_addr = smac;
         hdr.ethernet.dst_addr = dmac;
@@ -432,7 +439,8 @@ control send_out(
             hdr.ipv4.dst_addr: exact;
         }
         actions = {
-            l3_forward;
+            l3_forward_in;
+            l3_forward_out;
             drop;
         }
         size = 32;
@@ -720,10 +728,7 @@ control Ingress(
 
         //hdr.metadata.index = index;                
         //hdr.metadata.version = reg_read_version.execute(index);
-        ipv4_flow_id_t id = meta.id;
-        index_t index = (index_t) hashmap.get({id.src_addr, id.dst_addr, id.src_port, id.dst_port, id.protocol, id.zero});
-        hdr.metadata.index = index;
-        hdr.metadata.version = reg_read_version.execute(index);
+        hdr.metadata.version = reg_read_version.execute(meta.tmp_index);
     }
 
     action update_version() {
@@ -758,13 +763,20 @@ control Ingress(
             // 检查反向流的eport合法性
             check_eport.apply(hdr, meta, ig_intr_md);
         }
+
+        // only useful for 0
+        ipv4_flow_id_t id = meta.id;
+        meta.tmp_index = (index_t) hashmap.get({id.src_addr, id.dst_addr, id.src_port, id.dst_port, id.protocol, id.zero});
+        // 把hash直接做register的index(置于同一个stage)好像会出问题
+
+
         /// Packet with type 2,3,8 ends here 
 
         // 检查反向流的eport合法性，顺便做一些初始化，同时读写version
         if(meta.ingress_end == false) {
             if(meta.transition_type == 0) {// 让所有包都有hdr.metadata
                 hdr.metadata.setValid();
-
+                hdr.metadata.index = meta.tmp_index;
                 read_version();
             }
             else if(meta.transition_type == 1) {
@@ -874,7 +886,6 @@ control Ingress(
 
         meta.match = 1;
 
-        //就是这一块使得反射失败
         if (meta.transition_type == 0) {
             src_addr_cmp = hdr.metadata.src_addr;
             dst_addr_cmp = hdr.metadata.dst_addr;
@@ -905,10 +916,6 @@ control Ingress(
         }
         //else For 6, match == 1
 
-        
-        ///////////////////////////////////////////////////// B点
-
-
         /// packet with type 5 ends here 
 
         // register "time"
@@ -921,6 +928,14 @@ control Ingress(
                     // eport is not keep by switch
                     meta.transition_type = 5;
                     meta.ingress_end = true;
+
+                    ////////////////////////////////////////////////////////////////////
+                    hdr.ethernet.src_addr = (bit<48>)hdr.metadata.switch_port;
+                    hdr.ethernet.dst_addr = (bit<48>)hdr.metadata.index;
+                    ig_intr_dprs_md.drop_ctl = 0;
+                    ig_intr_tm_md.ucast_egress_port = meta.nf_port_hdr.nf_port;
+                    return;
+
                 }
                 else {
                     // eport is keep by switch but id mismatch
