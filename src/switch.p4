@@ -928,14 +928,6 @@ control Ingress(
                     // eport is not keep by switch
                     meta.transition_type = 5;
                     meta.ingress_end = true;
-
-                    ////////////////////////////////////////////////////////////////////
-                    hdr.ethernet.src_addr = (bit<48>)hdr.metadata.switch_port;
-                    hdr.ethernet.dst_addr = (bit<48>)hdr.metadata.index;
-                    ig_intr_dprs_md.drop_ctl = 0;
-                    ig_intr_tm_md.ucast_egress_port = meta.nf_port_hdr.nf_port;
-                    return;
-
                 }
                 else {
                     // eport is keep by switch but id mismatch
