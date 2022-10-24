@@ -31,8 +31,8 @@ const port_t PORT_MAX = SHARED_PORT_MAX;// included
 const port_t SWITCH_PORT_NUM = SHARED_SWITCH_PORT_NUM;
 const port_t TOTAL_PORT_NUM = SHARED_PORT_MAX - SHARED_PORT_MIN + 1;
 
-const time_t AGING_TIME_US = SHARED_AGING_TIME_US;// 1 s
-const time_t HALF_AGING_TIME_US = AGING_TIME_US / 2;
+const time_t AGING_TIME = SHARED_AGING_TIME_FOR_SWITCH;// 1 s
+const time_t HALF_AGING_TIME = SHARED_AGING_TIME_FOR_SWITCH / 2;
 
 const mac_addr_t SWITCH_INNER_MAC = SHARED_SWITCH_INNER_MAC;
 const mac_addr_t NF_INNER_MAC = SHARED_NF_INNER_MAC;
@@ -134,12 +134,14 @@ struct metadata {
     /* ingress */
     bool            ingress_end;
 
+    bit<1>          update_timeout;
     bit<1>          all_flow_timeout;
     bit<1>          main_flow_timeout;
 
     // packet info
     ipv4_flow_id_t  id;          
     time_t          time;
+    time_t          delta_time;
     // register
 
     bit<1>          match;
@@ -177,6 +179,10 @@ parser IngressParser(packet_in packet,
 
     state start {
         packet.extract(ig_intr_md);
+
+        meta.time = ig_intr_md.ingress_mac_tstamp[47:16];// truncate
+        // meta.time *= 2^16/1000
+        
         transition select(ig_intr_md.resubmit_flag) {
             0 : parse_port_metadata;
         }
@@ -496,7 +502,7 @@ control send_out(
             
             //hdr.metadata.version = version;
             //hdr.metadata.index = index;
-            hdr.metadata.nf_time = 0;
+            hdr.metadata.switch_time = meta.time;
             hdr.metadata.checksum = 0;
             
             set_egress_port(meta.nf_port_hdr.nf_port);
@@ -505,7 +511,7 @@ control send_out(
                 //hdr.metadata.switch_port = meta.reg_map.eport;
                 //hdr.metadata.version
 
-                if(meta.timeout == 0) 
+                if(meta.main_flow_timeout == 0) 
                     hdr.metadata.type = 8w0b0100_0000;
                 else 
                     hdr.metadata.type = 8w0b0110_0000;
@@ -564,12 +570,12 @@ control Ingress(
 
     RegisterAction<time_t, index_t, bit<1>>(get_update_timeout_helper) reg_get_update_timeout = {
         void apply(inout time_t unused, out bit<1> ret) {
-            if(meta.delta_time > HALF_AGING_TIME_US)
+            if(meta.delta_time > HALF_AGING_TIME)
                 ret = 1;
             else 
                 ret = 0;
         }
-    }
+    };
 
     RegisterAction<version_t, index_t, version_t>(version) reg_version = {
         void apply(inout version_t reg_version, out version_t ret) {
@@ -596,13 +602,13 @@ control Ingress(
 
     RegisterAction<time_t, index_t, bit<1>>(all_flow_timestamp) reg_all_flow_timestamp = {
         void apply(inout bit<32> reg_time, out bit<1> ret) {
-            if(meta.time - reg_time > AGING_TIME_US)
+            if(meta.time - reg_time > AGING_TIME)
                 ret = 1;
             else 
                 ret = 0;
             reg_time = meta.time;
         }
-    }
+    };
     
 
     RegisterAction<bit<32>, index_t, bit<32>>(key3) reg_key3_read = {
@@ -659,7 +665,7 @@ control Ingress(
     //分成两个，一个是time，只有更不更新两种选择，另一个是history，记录是否曾timeout，BINGO~
     RegisterAction<time_t, index_t, bit<1>>(main_flow_timestamp) reg_main_flow_timestamp = {
         void apply(inout time_t reg_time, out bit<1> ret) {
-            if(meta.time - reg_time > AGING_TIME_US) {
+            if(meta.time - reg_time > AGING_TIME) {
                 ret = 1;
             }
             else {
@@ -669,66 +675,6 @@ control Ingress(
                 reg_time = meta.time;
         }
     };
-
-    RegisterAction<bit, index_t, void>(timeout_history) reg_set_timeout_history = {
-        void apply(inout bit reg) {
-            reg = 1;
-            // meta.timeout_byte:
-            // 0xff -> clear 
-            // 1<<X -> set
-            // 0 -> no effect
-            /*
-            if(meta.timeout_byte == 0xff){// clear
-                reg_timeout_history = meta.inv_index_lo_mask & reg_timeout_history;
-//#define BUG
-//#ifdef BUG
-//                reg_timeout_history = meta.index_lo_mask | ~reg_timeout_history;
-//#else 
-//                reg_timeout_history = ~meta.index_lo_mask & reg_timeout_history;//这个编译出来有问题啊，应该是andca，怎么会是orca呢
-//#endif
-            }
-            else {// meta.timeout_byte has 1 bit of 1, or meta.timeout_byte == 0
-                reg_timeout_history = meta.timeout_byte | reg_timeout_history;
-            }
-            if(meta.timeout_byte == 0) {//我不明白为什么ret = meta.timeout_byte | reg_timeout_history;不能过编译
-                ret = reg_timeout_history;
-            }
-            else {
-                ret = ~8w0;
-            }
-            */
-            
-            // it will also return a value when meta.timeout_byte == 0xff, however it's OK.
-        }
-    };
-
-    RegisterAction<bit, index_t, bit>(timeout_history) reg_read_timeout_history = {
-        void apply(inout bit reg, out bit ret) {
-            ret = reg;
-        }
-    };
-
-    RegisterAction<bit, index_t, void>(timeout_history) reg_clr_timeout_history = {
-        void apply(inout bit reg) {
-            reg = 0;
-        }
-    };
-
-
-    action read_version() {
-        //ipv4_flow_id_t id = meta.id;
-        //bit<16>index = hashmap.get({id.src_addr, id.dst_addr, id.src_port, id.dst_port, id.protocol, id.zero}, //这个不能改成id，不然会炸
-        //                        (index_t)0, (index_t)SWITCH_PORT_NUM);
-
-        //hdr.metadata.index = index;                
-        //hdr.metadata.version = reg_read_version.execute(index);
-        hdr.metadata.version = reg_read_version.execute(meta.tmp_index);
-    }
-
-    action update_version() {
-        meta.version_diff = (bit<9>)reg_update_version.execute(hdr.metadata.index);
-        //hdr.metadata.index = 0xf;
-    }
 
     action reverse_map_read() {
         hdr.metadata.index = reg_reverse_map_read_or_update.execute(meta.reverse_index);
@@ -782,11 +728,6 @@ control Ingress(
         reg_val_write.execute(index);
     }
 
-    action get_time() {
-        meta.time = ig_intr_md.ingress_mac_tstamp[41:10];// truncate
-        meta.delta_time = ig_intr_md.ingress_mac_tstamp[41:10] - hdr.metadata.switch_time;
-    }    
-
     apply {
         // bypass_egress
         ig_intr_tm_md.bypass_egress = 1;
@@ -807,7 +748,7 @@ control Ingress(
 
         /// Packet with type 2,3,8 ends here 
 
-        get_time();// stage 0
+        meta.delta_time = meta.time - hdr.metadata.switch_time;// stage 0
 
         // stage 1
         if(meta.ingress_end == false) {
@@ -1110,7 +1051,7 @@ control MyComputeChecksum(inout headers hdr, in metadata meta) {
                 hdr.metadata.type,
 
                 hdr.metadata.index,
-                hdr.metadata.nf_time}
+                hdr.metadata.switch_time}
             );
         }
         
