@@ -15,3 +15,6 @@
 #define SHARED_NF_INNER_MAC 0x2
 
 //#define DEBUG 1
+
+//by define this, very flow must send a in-to-out packet periodically
+//#define THERE_MUST_BE_FORWARD_HEARTBEATS 1 

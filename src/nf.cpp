@@ -68,7 +68,7 @@ struct nat_metadata_t{
     u8          is_to_out : 1;
     u8          is_to_in  : 1;
     port_t      index;
-    mytime_t    nf_time_net;
+    mytime_t    switch_time_net;
     checksum_t  checksum;
 }__attribute__ ((__packed__));
 
