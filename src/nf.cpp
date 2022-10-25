@@ -63,7 +63,8 @@ struct nat_metadata_t{
     flow_id_t   id;
     port_t      switch_port;
     version_t   version;
-    u8          zero      : 5;
+    u8          zero      : 4;
+    u8          is_reject : 1;
     u8          is_update : 1;
     u8          is_to_out : 1;
     u8          is_to_in  : 1;
@@ -648,8 +649,8 @@ void ack_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
     if(!wait_entry -> is_waiting) return; // Redundant ACK
     debug_printf("3\n");
     // mismatch
-    if(memcmp(&wait_entry->map.id, &hdr->metadata.id, sizeof(hdr->metadata.id)) != 0 ||
-        wait_entry->map.eport != hdr->metadata.switch_port ||
+    if(/*memcmp(&wait_entry->map.id, &hdr->metadata.id, sizeof(hdr->metadata.id)) != 0 ||
+        wait_entry->map.eport != hdr->metadata.switch_port ||*/
         wait_entry->version != hdr->metadata.version) 
         return;
     debug_printf("4\n");
@@ -661,35 +662,36 @@ void ack_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
     list_entry_t *entry_nf = port_host_to_entry(ntohs(wait_entry->map.eport));
 
     if(entry_sw != NULL) {
-        if(entry_sw->type != list_type::sw) {
-            printf("%d\n", entry_sw->type);// print出来是avail
-        }
-        assert(entry_sw->type == list_type::sw);///////////////////////////这里还有问题///////////////////////////
+        assert(entry_sw->type == list_type::sw);
     }
     assert(entry_nf->type == list_type::inuse);
 
-    if(entry_sw != NULL) {
-        entry_sw->is_waiting = 0;// this assignment is useless
-    }
+    //if(entry_sw != NULL) {
+    //    entry_sw->is_waiting = 0;// this assignment is useless
+    //}
+
     entry_nf->is_waiting = 0;
     wait_entry->is_waiting = 0;
 
-    if(entry_sw != NULL) {
-        entry_sw->type = list_type::avail;
-    }
-    entry_nf->type = list_type::sw;
-
-    if(entry_sw != NULL) {
-        list_move_to_back(avail_port_leader, entry_sw);// sw->avail
-    }
-    list_move_to_back(sw_port_leader, entry_nf);// inuse->sw
     list_erase(wait_entry);
 
-    // bug fixed: we should erase entry in map
-    auto erase_res = map.erase(entry_nf->id);
-    assert(erase_res == 1); 
+    if(! hdr->metadata.is_reject) {
+        if(entry_sw != NULL) {
+            entry_sw->type = list_type::avail;
+        }
+        entry_nf->type = list_type::sw;
 
-    debug_printf("\nreceive ACK\n");
+        if(entry_sw != NULL) {
+            list_move_to_back(avail_port_leader, entry_sw);// sw->avail
+        }
+        list_move_to_back(sw_port_leader, entry_nf);// inuse->sw
+
+        // bug fixed: we should erase entry in map
+        auto erase_res = map.erase(entry_nf->id);
+        assert(erase_res == 1); 
+    }
+
+    debug_printf("\nreceive ACK (%s)\n", hdr->metadata.is_reject? "reject": "accept");
     debug_printf("old switch port: %d\n", wait_set[index].switch_port);
     debug_printf("new map: ");
     print_map(wait_set[index].map.id, ntohs(wait_set[index].map.eport), index);

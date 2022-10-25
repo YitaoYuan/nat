@@ -58,7 +58,7 @@ header nat_metadata_t {//26
     port_t      switch_port;
     version_t   version;
 
-    bit<8>      type;// 8w0b1000_0000 to_in, 8w0b0100_0000 to_out, 8w0b0010_0000 update(accept), 8w0b0011_0000 update(refuse)
+    bit<8>      type;// 8w0b1000_0000 to_in, 8w0b0100_0000 to_out, 8w0b0010_0000 update(accept), 8w0b0011_0000 update(reject)
     
 
     index_t     index; // index is the hash value of flow id
@@ -802,12 +802,12 @@ control Ingress(
                 if(meta.version_diff != 0 && meta.version_diff != 9w255) // != 0, 1
                     meta.transition_type = 7;// no response
                 else if(meta.version_diff == 9w255 && meta.update_timeout == 1)
-                    hdr.metadata.type = 0b0011_0000;// refuse
+                    hdr.metadata.type = 0b0011_0000;// reject
                 else 
                     hdr.metadata.type = 0b0010_0000;// accept
                 // switch(transition_type, update_timeout):
                 //      0 , _   : end, send accept
-                //      -1, 1   : end, send refuse
+                //      -1, 1   : end, send reject
                 //      -1, 0   : go down, send accept
                 //      _ , _   : end, no response
             }
