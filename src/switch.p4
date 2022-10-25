@@ -558,7 +558,7 @@ control Ingress(
         inout ingress_intrinsic_metadata_for_deparser_t ig_intr_dprs_md,
         inout ingress_intrinsic_metadata_for_tm_t ig_intr_tm_md) {
 
-    Register<time_t, index_t>(1, 0) get_update_timeout_helper; 
+    Register<time_t, index_t>(1) get_update_timeout_helper; 
 
     Hash<bit<SWITCH_PORT_NUM_LOG>>(HashAlgorithm_t.CRC16) hashmap;
     
@@ -792,8 +792,10 @@ control Ingress(
                 if(meta.version_diff == 9w255 && meta.update_timeout == 0) {
                     reverse_map_write();// 
                 }
-                else 
+                else {
                     meta.ingress_end = true;  
+                }
+                    
                 //if(meta.version_diff != 9w255 || meta.update_timeout != 0) // 修改不同的位域不要用else if!!!!!!
                 //    meta.ingress_end = true;  
 
@@ -820,7 +822,15 @@ control Ingress(
 #ifdef THERE_MUST_BE_FORWARD_HEARTBEATS
             if (meta.transition_type != 1) {
 #endif
-                meta.all_flow_timeout = reg_all_flow_timestamp.execute(hdr.metadata.index);
+                if(meta.transition_type == 0 && hdr.metadata.version == 0) {
+                    meta.all_flow_timeout = 0;
+
+                    // 此时我们禁止“原地抢占”，因为switch没有初始化，需要从server索要映射条目
+                    // 注意version有可能回滚，但这无伤大雅
+                }
+                else {
+                    meta.all_flow_timeout = reg_all_flow_timestamp.execute(hdr.metadata.index);
+                }
 #ifdef THERE_MUST_BE_FORWARD_HEARTBEATS
             }
 #endif
@@ -980,10 +990,10 @@ control Ingress(
         /// packet with type 0,1,4 ends here 
         
         
-        //stage 10
+        // stage 10
         send_out.apply(hdr, meta, ig_intr_md, ig_intr_dprs_md, ig_intr_tm_md);
 
-        // stage 11, 加不加都会占12个stage
+        // stage 11, 加不加都会占12个stage，加了之后前面的代码会压缩到前11个stage
         //ig_intr_tm_md.ucast_egress_port = ig_intr_tm_md.ucast_egress_port ^ 1;
         /*
         if(meta.transition_type == 0) {//可压缩stage
