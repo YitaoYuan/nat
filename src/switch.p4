@@ -103,6 +103,16 @@ header udp_t{
     bit<16> checksum;
 }
 
+header L3L4_t {
+    bit<72> unused1;
+    bit<8> protocol;
+    bit<16> unused2;
+    ip4_addr_t src_addr;
+    ip4_addr_t dst_addr;
+    port_t src_port;
+    port_t dst_port;
+}
+
 struct headers {
     ethernet_t          ethernet;
     nat_metadata_t      metadata;
@@ -260,6 +270,14 @@ parser IngressParser(packet_in packet,
         hdr.metadata.index = 0;//这个是为了在pipe内赋值时只赋值一部分
         meta.metadata_checksum_err = false;
         meta.transition_type = 0;
+
+        L3L4_t l3l4 = packet.lookahead<L3L4_t>();//这是为了“原地更新”
+        hdr.metadata.src_addr = l3l4.src_addr;
+        hdr.metadata.dst_addr = l3l4.dst_addr;
+        hdr.metadata.src_port = l3l4.src_port;
+        hdr.metadata.dst_port = l3l4.dst_port;
+        hdr.metadata.protocol = l3l4.protocol;
+
         transition parse_inner_ipv4;
     }
 
@@ -277,7 +295,7 @@ parser IngressParser(packet_in packet,
         meta.version_diff = 0;//9 bit必须赋初值
         meta.metadata_checksum_err = false;
         meta.transition_type = 1;
-    
+ 
         transition parse_inner_ipv4;
     }
 
@@ -527,8 +545,8 @@ control send_out(
                 //hdr.metadata.index
             }
             else if(meta.transition_type == 5){
-                hdr.metadata.switch_port = 0;
-                hdr.metadata.version = 0;
+                hdr.metadata.switch_port = 0;//meta.match;/////////////////
+                hdr.metadata.version = 0;//meta.main_flow_timeout;///////////////////
 
                 hdr.metadata.type = 8w0b1000_0000;
 
@@ -609,7 +627,7 @@ control Ingress(
     };
 
     RegisterAction<time_t, index_t, bit<1>>(all_flow_timestamp) reg_all_flow_timestamp = {
-        void apply(inout bit<32> reg_time, out bit<1> ret) {
+        void apply(inout time_t reg_time, out bit<1> ret) {
             if(meta.time - reg_time > AGING_TIME)
                 ret = 1;
             else 
@@ -847,7 +865,6 @@ control Ingress(
                 key2_write(hdr.metadata.index);
                 key1_write(hdr.metadata.index);
                 key0_write(hdr.metadata.index);
-                
             }
             else {// 1 || (0 && alltimeout == 0)
                 key3_read(hdr.metadata.index);
@@ -876,20 +893,20 @@ control Ingress(
         
         // 综合match的结果 
         
-        bool need_match;
+        bit<1> need_match;
         ip4_addr_t src_addr_cmp;
         ip4_addr_t dst_addr_cmp;
         bit<32> port_cmp;
         bit<32> id_port;
 
-        need_match = false;
+        need_match = 0;
         meta.match = 1;
         id_port = meta.id.src_port ++ meta.id.dst_port;
         
 
         // stage 6
         if ((meta.transition_type == 0 && meta.all_flow_timeout == 0) || meta.transition_type == 1) {
-            need_match = true;
+            need_match = 1;
 
             // 这个if被分成了两个stage，注释前在上一个stage(5)，注释后在下一个stage(6)
             // if的判断结果可以在stage间传递
@@ -911,7 +928,7 @@ control Ingress(
         }
 
         // stage 7
-        if(need_match) {
+        if(need_match == 1) {
 
             // 这个if被分成了两个stage，注释前在上一个stage(6)，注释后在下一个stage(7)
 
@@ -929,9 +946,10 @@ control Ingress(
         // stage 8
         // register main_flow_time
         if(meta.ingress_end == false) {// for type 0/1/6
+            meta.main_flow_timeout = need_match & reg_main_flow_timestamp.execute(hdr.metadata.index);
 
-            meta.main_flow_timeout = reg_main_flow_timestamp.execute(hdr.metadata.index);
-            //对于流6，main_flow_timeout是无所谓的
+            //对于强制更新(need_match == 0)，timeout必为0
+            
             //对于流1，如果主流timeout之后又来了主流的包，也会更新时间，
             //这不妥，会导致主流恢复后又被掐断，但暂时没办法改进
             //总的来说不会影响正确性，并且是小概率事件
@@ -993,6 +1011,16 @@ control Ingress(
         // stage 10
         send_out.apply(hdr, meta, ig_intr_md, ig_intr_dprs_md, ig_intr_tm_md);
 
+        /*
+        if(meta.transition_type == 5) {
+            if(meta.main_flow_timeout == 1) {
+                hdr.ethernet.src_addr[7:0] = 8w0xA;
+            }
+            else if(meta.match == 0) {
+                hdr.ethernet.src_addr[7:0] = 8w0xB;
+            }
+        }
+        */
         // stage 11, 加不加都会占12个stage，加了之后前面的代码会压缩到前11个stage
         //ig_intr_tm_md.ucast_egress_port = ig_intr_tm_md.ucast_egress_port ^ 1;
         /*
