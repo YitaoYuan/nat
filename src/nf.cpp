@@ -68,7 +68,7 @@ struct nat_metadata_t{
     u8          is_to_out : 1;
     u8          is_to_in  : 1;
     port_t      index;
-    mytime_t    switch_time_net;
+    mytime_t    switch_time;
     checksum_t  checksum;
 }__attribute__ ((__packed__));
 
@@ -131,9 +131,11 @@ struct Hash{
 
 struct wait_entry_t{
     map_entry_t map;// net
-    version_t version;// net
+    version_t version;// net (u8 is the same)
     port_t switch_port;// net
-    mytime_t first_req_time_host, last_req_time_host;// host
+    mytime_t switch_time;// net
+    mytime_t first_req_time_host;
+    mytime_t last_req_time_host;// host
     wait_entry_t *l, *r;
     bool is_waiting;
 };
@@ -424,7 +426,7 @@ void send_update(port_t index)
 
     hdr->metadata.index = htons(index);
 
-    hdr->metadata.nf_time_net = htonl(wait_set[index].first_req_time_host);// not necessary to convert
+    hdr->metadata.switch_time = wait_set[index].switch_time;// not necessary to convert
 
     hdr->metadata.checksum = 0;// clear to recalculate
     hdr->metadata.checksum = htons(make_zero_negative(compute_checksum(hdr->metadata)));
@@ -535,7 +537,8 @@ void forward_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
             flow_id_t &swap_id = swap_entry->id;
 
             wait_set[index] = {{swap_id, swap_port_n}, (u8)(metadata.version + 1), 
-                                metadata.switch_port, timestamp, timestamp, NULL, NULL, true};
+                                metadata.switch_port, metadata.switch_time, timestamp, timestamp, 
+                                NULL, NULL, true};
             // map entry
             swap_entry->is_waiting = 1;// locked, it will not be moved to list "avail" immediately
 
@@ -634,7 +637,9 @@ void ack_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
     // only hdr.ethernet & hdr.metadata is valid
     assert(hdr->metadata.is_update);
     
-    if(timestamp - ntohl(hdr->metadata.nf_time_net) > AGING_TIME_US / 2) return;
+    //if(timestamp - ntohl(hdr->metadata.nf_time_net) > AGING_TIME_US / 2) return;
+    // this is no longer needed, since we use "switch_time"
+
     debug_printf("1\n");
     port_t index = ntohs(hdr->metadata.index);
     if(index >= SWITCH_PORT_NUM) return; // if checksum is right, this could not happen
@@ -741,7 +746,12 @@ void update_wait_set(mytime_t timestamp)
     {
         wait_entry_t *entry = list_front(wait_set_leader);
         if(timestamp - entry->last_req_time_host <= WAIT_TIME_US) break;
-        if(timestamp - entry->first_req_time_host > AGING_TIME_US / 2) report_wait_time_too_long();
+
+        // this is no longer needed, but we still use it to prevent the worst case
+        // this is no longer needed, but we still use it to prevent the worst case
+        // this is no longer needed, but we still use it to prevent the worst case
+        if(timestamp - entry->first_req_time_host > AGING_TIME_US) report_wait_time_too_long();
+
         entry->last_req_time_host = timestamp;
 
         port_t index = (port_t)(entry - wait_set);
