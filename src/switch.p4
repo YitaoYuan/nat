@@ -151,11 +151,10 @@ struct metadata {
     bool            update_udp_checksum;
 
     /* ingress checksum -> egress checksum */
-    bool            tmp_bool0;
-    bool            tmp_bool1;
-    bool            tmp_bool2;
-    bool            tmp_bool3;
-    bool            tmp_bool4;
+    bool            match0;
+    bool            match1;
+    bool            match2;
+    bool            match3;
 
 }
 
@@ -738,6 +737,7 @@ control Ingress(
     }
 
     apply {
+        // stage 0
         // bypass_egress
         ig_intr_tm_md.bypass_egress = 1; 
 
@@ -787,36 +787,34 @@ control Ingress(
 
         
         // stage 3
-        if(meta.ingress_end == false && meta.transition_type == 6) {
-            if(meta.version_diff != 9w255 || meta.update_timeout != 0) // 修改不同的位域不要用else if!!!!!!
-                meta.ingress_end = true;  
-
-            if(meta.version_diff != 0 && meta.version_diff != 9w255) // != 0, 1
-                meta.transition_type = 7;// no response
-            else if(meta.version_diff == 9w255 && meta.update_timeout == 1)
-                hdr.metadata.type = 0b0011_0000;// refuse
-            else 
-                hdr.metadata.type = 0b0010_0000;// accept
-            // switch(transition_type, update_timeout):
-            //      0 , _   : end, send accept
-            //      -1, 1   : end, send refuse
-            //      -1, 0   : go down, send accept
-            //      _ , _   : end, no response
-        }
-
-        
-        // stage 4
-        // register "reverse_map"
         if(meta.ingress_end == false) {
-            if (meta.transition_type == 1) {
+            if(meta.transition_type == 6) {
+                if(meta.version_diff == 9w255 && meta.update_timeout == 0) {
+                    reverse_map_write();// 
+                }
+                else 
+                    meta.ingress_end = true;  
+                //if(meta.version_diff != 9w255 || meta.update_timeout != 0) // 修改不同的位域不要用else if!!!!!!
+                //    meta.ingress_end = true;  
+
+                if(meta.version_diff != 0 && meta.version_diff != 9w255) // != 0, 1
+                    meta.transition_type = 7;// no response
+                else if(meta.version_diff == 9w255 && meta.update_timeout == 1)
+                    hdr.metadata.type = 0b0011_0000;// refuse
+                else 
+                    hdr.metadata.type = 0b0010_0000;// accept
+                // switch(transition_type, update_timeout):
+                //      0 , _   : end, send accept
+                //      -1, 1   : end, send refuse
+                //      -1, 0   : go down, send accept
+                //      _ , _   : end, no response
+            }
+            else if(meta.transition_type == 1) {
                 reverse_map_read();// 1的index在这里获得
             }
-            else if(meta.transition_type == 6) {
-                reverse_map_write();// 
-            }
         }
 
-        // stage 5
+        // stage 4
         // register "all_flow_timestamp"
         if(meta.ingress_end == false) {
 #ifdef THERE_MUST_BE_FORWARD_HEARTBEATS
@@ -830,7 +828,7 @@ control Ingress(
         }
         
         
-        // stage 6
+        // stage 5
         // register "map"
         // RegisterAction会两两合并
         if(meta.ingress_end == false) {
@@ -865,124 +863,133 @@ control Ingress(
             }
         }
         
+        
         // 综合match的结果 
+        
+        bool need_match;
         ip4_addr_t src_addr_cmp;
         ip4_addr_t dst_addr_cmp;
-        port_t src_port_cmp;
-        port_t dst_port_cmp;
+        bit<32> port_cmp;
+        bit<32> id_port;
 
+        need_match = false;
         meta.match = 1;
+        id_port = meta.id.src_port ++ meta.id.dst_port;
+        
 
-        // stage 7
-        if (meta.transition_type == 0 && meta.all_flow_timeout == 0) {
-            src_addr_cmp = hdr.metadata.src_addr;
-            dst_addr_cmp = hdr.metadata.dst_addr;
-            src_port_cmp = hdr.metadata.src_port;
-            dst_port_cmp = hdr.metadata.dst_port;
-            if(hdr.metadata.protocol != meta.id.protocol) {
+        // stage 6
+        if ((meta.transition_type == 0 && meta.all_flow_timeout == 0) || meta.transition_type == 1) {
+            need_match = true;
+
+            // 这个if被分成了两个stage，注释前在上一个stage(5)，注释后在下一个stage(6)
+            // if的判断结果可以在stage间传递
+
+            if(meta.id.protocol != hdr.metadata.protocol) {
                 meta.match = 0;
             }
+        }
+
+        if(meta.transition_type == 0) {
+            src_addr_cmp = hdr.metadata.src_addr;
+            dst_addr_cmp = hdr.metadata.dst_addr;
+            port_cmp = hdr.metadata.src_port ++ hdr.metadata.dst_port;
         }
         else if(meta.transition_type == 1) {
             src_addr_cmp = hdr.metadata.dst_addr;
-            dst_addr_cmp = NAT_ADDR;// useless
-            src_port_cmp = hdr.metadata.dst_port;
-            dst_port_cmp = hdr.metadata.switch_port;
-            if(hdr.metadata.protocol != meta.id.protocol) {
-                meta.match = 0;
-            }
+            dst_addr_cmp = NAT_ADDR;
+            port_cmp = hdr.metadata.dst_port ++ hdr.metadata.switch_port;
         }
-        //else // For 6, match == 1
-  
-        
-        // stage 8
-        if((meta.transition_type == 0 && meta.all_flow_timeout == 0) || meta.transition_type == 1) {// 0/1
+
+        // stage 7
+        if(need_match) {
+
+            // 这个if被分成了两个stage，注释前在上一个stage(6)，注释后在下一个stage(7)
+
             if(src_addr_cmp != meta.id.src_addr)
                 meta.match = 0;
             else if(dst_addr_cmp != meta.id.dst_addr)
                 meta.match = 0;
-            else if(src_port_cmp != meta.id.src_port || dst_port_cmp != meta.id.dst_port)
+            else if(port_cmp != id_port)
                 meta.match = 0;
         }
-        //else For 6, match == 1
 
         /// packet with type 5 ends here 
-
-        // stage 9
+        
+        
+        // stage 8
         // register main_flow_time
         if(meta.ingress_end == false) {// for type 0/1/6
-            if(meta.transition_type == 6 || (meta.transition_type == 0 && meta.all_flow_timeout == 1)) {
-                reg_main_flow_timestamp.execute(hdr.metadata.index);
-                meta.main_flow_timeout = 0;
-            }
-            else {
-                meta.main_flow_timeout = reg_main_flow_timestamp.execute(hdr.metadata.index);
-                //如果主流timeout之后又来了主流的包，也会更新时间，
-                //这不妥，会导致主流恢复后又被掐断，但暂时没办法改进
-                //总的来说不会影响正确性，并且是小概率事件
-            }
 
-            if(meta.transition_type == 6) {
+            meta.main_flow_timeout = reg_main_flow_timestamp.execute(hdr.metadata.index);
+            //对于流6，main_flow_timeout是无所谓的
+            //对于流1，如果主流timeout之后又来了主流的包，也会更新时间，
+            //这不妥，会导致主流恢复后又被掐断，但暂时没办法改进
+            //总的来说不会影响正确性，并且是小概率事件
+
+            if(meta.match == 0 || meta.transition_type == 6) {
                 meta.ingress_end = true;
             }
 
-            if(meta.transition_type == 1 && meta.match == 0) {
-                if(hdr.metadata.switch_port != meta.id.dst_port) {
-                    // eport is not keep by switch
-                    meta.transition_type = 5;
-                    meta.ingress_end = true;
-                }
-                else {
-                    // eport is keep by switch but id mismatch
-                    meta.transition_type = 7;
-                    meta.ingress_end = true;
-                } 
+            //这个if一定要放后面！！！
+            if(meta.match == 0) {// 0/1才可能不match
+                meta.transition_type = meta.transition_type + 4;// 0->4, 1->5
             }
+            
+            
         }
-        
         /// packet with type 6 ends here 
+        /*
+        if(meta.ingress_end == false && meta.main_flow_timeout == 1){
+            hdr.ethernet.ether_type = 0;
+        }*/
+
+        // stage 9
         
-        // stage 10
-        // translate
-        if(meta.ingress_end == false) {
-            if (meta.transition_type == 0) {
-                if(meta.match == 1 && meta.main_flow_timeout == 0) {
+        if(meta.ingress_end == false) {// 0/1才能进，并且已经match
+
+            if(meta.main_flow_timeout == 0) {
+                
+                if(meta.transition_type == 0) {
                     // translate
                     hdr.ipv4.src_addr = NAT_ADDR;
                     if(meta.is_tcp) 
                         hdr.tcp.src_port = hdr.metadata.switch_port;
                     else
                         hdr.udp.src_port = hdr.metadata.switch_port;
-
-                    meta.ingress_end = true;
                 }
-                else {
-                    meta.transition_type = 4;
-                    meta.ingress_end = true;
-                }
-            }
-            else {// it must be type 1
-                if(meta.main_flow_timeout == 0) {// mata.match is always true
+                
+                if(meta.transition_type == 1) {// else只用来实现写互斥
                     // reverse_translate
                     hdr.ipv4.dst_addr = hdr.metadata.src_addr;
                     if(meta.is_tcp)
                         hdr.tcp.dst_port = hdr.metadata.src_port;
                     else
                         hdr.udp.dst_port = hdr.metadata.src_port;
-
-                    meta.ingress_end = true;
                 }
-                else {
-                    // timeout
-                    meta.transition_type = 7;
-                    meta.ingress_end = true;
-                }  
+                
+            }
+            
+            if(meta.main_flow_timeout == 1) {//这个if一定放后面
+                meta.transition_type = meta.transition_type + 4;
+                //对于流1，这里转移到5和7都行，因为此时即将更新，主流超时只会持续很短的时间
             }
         }
+        
+        //meta.ingress_end = true;
+        
         /// packet with type 0,1,4 ends here 
         
-        //stage 11
+        
+        //stage 10
         send_out.apply(hdr, meta, ig_intr_md, ig_intr_dprs_md, ig_intr_tm_md);
+
+        // stage 11, 加不加都会占12个stage
+        //ig_intr_tm_md.ucast_egress_port = ig_intr_tm_md.ucast_egress_port ^ 1;
+        /*
+        if(meta.transition_type == 0) {//可压缩stage
+            hdr.ethernet.ether_type = 0;
+        }
+        */
         
     }
 }
