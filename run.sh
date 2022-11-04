@@ -2,8 +2,15 @@
 
 set -e 
 
+if [ $# -ne 2 ];
+then 
+	echo "Usage: run.sh <P4_PROGRAM_NAME> <BFRT_PRELOAD_FILE>"
+	exit 1
+fi
+
 DIR=`cd $(dirname $0); pwd`
-PROGRAM=nat
+PROGRAM=$1
+BFRT_PRELOAD_FILE=`cd $(dirname $2); pwd`/$(basename $2)
 
 echo "Find and kill previous process."
 
@@ -19,7 +26,7 @@ fi
 
 echo "Boot switch in the background."
 
-$SDE/run_switchd.sh -p $PROGRAM > /dev/null 2>&1 &
+$SDE/run_switchd.sh -p "$PROGRAM" > /dev/null 2>&1 &
 
 if [ "$1" == "--skip-table" ]
 then
@@ -27,7 +34,7 @@ then
 else
 	echo -n "Initializing tables... "
 
-	$SDE/run_bfshell.sh -b ${DIR}/bfrt_table_init.py > /dev/null 2>&1
+	$SDE/run_bfshell.sh -b $BFRT_PRELOAD_FILE > /dev/null 2>&1
 
 	echo "Done."
 fi

@@ -3,8 +3,10 @@ all: nf switch
 
 DEPENDS=src/shared_metadata.h Makefile
 
+COMPILE_ARGS=-std=c++11 -lpcap -O3 -Wall -Wextra -Wshadow -Wno-unused -Wno-address-of-packed-member
+
 build/nf: src/nf.cpp ${DEPENDS} | build
-	g++ $< -o $@ -std=c++11 -lpcap -O3 -Wall -Wextra -Wshadow -Wno-unused -Wno-address-of-packed-member
+	g++ $< -o $@ ${COMPILE_ARGS}
 
 build/nat/tofino/pipe/switch.bfa: src/switch.p4 ${DEPENDS} build/Makefile | build
 	cd build; make && make install
@@ -25,8 +27,8 @@ switch: build/nat/tofino/pipe/switch.bfa
 
 .PHONY: run
 run: switch
-	./run.sh
+	./run.sh nat bfrt_table_init.py
 
 .PHONY: kill
 kill:
-	./kill_nat.sh
+	./kill.sh nat

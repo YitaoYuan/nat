@@ -87,6 +87,7 @@ struct tcp_t{
     u8 unused1[12];
     checksum_t checksum;
     u8 unused2[2];
+    char payload[];
 }__attribute__ ((__packed__));
 
 struct udp_t{
@@ -94,6 +95,7 @@ struct udp_t{
     port_t dst_port;
     u8 unused[2];
     checksum_t checksum;
+    char payload[];
 }__attribute__ ((__packed__));
 
 union L4_header_t{
@@ -171,11 +173,18 @@ const u32 HEAVY_HITTER_REBOOT_THRESHOLD = 128;
 /*
  * predefined MAC address is in network byte order
  */
+struct MAC_pair{
+    u16 hi;
+    u32 lo;
+}__attribute__ ((__packed__));
 
-static_assert(SHARED_SWITCH_INNER_MAC < 256u, "");
-static_assert(SHARED_NF_INNER_MAC < 256u, "");
-const u8 SWITCH_INNER_MAC[6] = {0, 0, 0, 0, 0, SHARED_SWITCH_INNER_MAC};
-const u8 NF_INNER_MAC[6] = {0, 0, 0, 0, 0, SHARED_NF_INNER_MAC};
+static_assert(sizeof(MAC_pair) == 6);
+
+MAC_pair SWITCH_INNER_MAC_PAIR = {htons(SHARED_SWITCH_INNER_MAC_HI16), htonl(SHARED_SWITCH_INNER_MAC_LO32)};
+MAC_pair NF_INNER_MAC_PAIR = {htons(SHARED_NF_INNER_MAC_HI16), htonl(SHARED_NF_INNER_MAC_LO32)};
+
+const u8 *SWITCH_INNER_MAC = (u8 *) &SWITCH_INNER_MAC_PAIR;
+const u8 *NF_INNER_MAC = (u8 *) &NF_INNER_MAC_PAIR;
 
 pcap_t *device;
 // for regular packet
@@ -333,11 +342,13 @@ void nf_init()
         list_insert_before(sw_port_leader, entry);
     }
     */
+    assert(PORT_MIN <= PORT_MAX);
         
-    for(port_t port = PORT_MIN; port <= PORT_MAX; port++) {
+    for(port_t port = PORT_MIN; ; port++) {// BUG fixed !! don't use "port <= PORT_MAX"
         list_entry_t *entry = port_host_to_entry(port);
         entry->type = list_type::avail;
         list_insert_before(avail_port_leader, entry);
+        if(port >= PORT_MAX) break;
     }
 
     wait_set_leader = &wait_set_leader_data;
@@ -552,6 +563,11 @@ void forward_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
         metadata.checksum = htons(make_zero_negative(sub(ntohs(metadata.checksum), delta)));
     }
     
+#ifdef NAT_TEST
+    // this does not change checksum
+    if(is_tcp) swap(*(checksum_t*)(hdr->L4_header.tcp.payload), *(checksum_t*)(hdr->L4_header.tcp.payload + 2));
+    else swap(*(checksum_t*)(hdr->L4_header.udp.payload), *(checksum_t*)(hdr->L4_header.udp.payload + 2));
+#endif
 
 // send back
     send_back(hdr, packet_len);
@@ -627,6 +643,11 @@ void backward_process(mytime_t timestamp, len_t packet_len, hdr_t * const hdr)
         if(hdr->L4_header.udp.checksum != 0)
             hdr->L4_header.udp.checksum = htons(make_zero_negative(sub(ntohs(hdr->L4_header.udp.checksum), delta)));
     }
+
+#ifdef NAT_TEST
+    if(is_tcp) swap(*(checksum_t*)(hdr->L4_header.tcp.payload + 4), *(checksum_t*)(hdr->L4_header.tcp.payload + 6));
+    else swap(*(checksum_t*)(hdr->L4_header.udp.payload + 4), *(checksum_t*)(hdr->L4_header.udp.payload + 6));
+#endif
 
 // send back
     send_back(hdr, packet_len);
@@ -823,6 +844,7 @@ int main(int argc, char **argv)
     nf_init();
 
     pcap_setnonblock(device, 1, errbuf);
+    
     while(1) {
         pcap_dispatch(device, 4, pcap_handle, NULL);// process at most 4 packets
 

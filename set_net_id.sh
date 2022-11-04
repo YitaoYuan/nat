@@ -10,7 +10,7 @@ ID=$2
 LOCAL_NET_ADDR=
 REMOTE_NET_ADDR=
 
-MAC_PREFIX=01:23:45:67:89
+MAC_PREFIX=02:00:00:00
 
 if [ '(' "$ID" -ge 0 -a "$ID" -le 9 \) ] # '(' and \( is the same
 then
@@ -24,12 +24,12 @@ if [ "$1" == "LAN" ]
 then 
 	LOCAL_NET_ADDR=$LAN_ADDR
 	REMOTE_NET_ADDR=$WAN_ADDR
-	MAC_TAIL=01
+	MAC_TAIL=01:01
 elif [ "$1" == "WAN" ]
 then
 	LOCAL_NET_ADDR=$WAN_ADDR
 	REMOTE_NET_ADDR=$LAN_ADDR
-	MAC_TAIL=02
+	MAC_TAIL=02:01
 else
 	echo "invalid net specify"
 	exit

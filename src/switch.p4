@@ -31,11 +31,11 @@ const port_t PORT_MAX = SHARED_PORT_MAX;// included
 const port_t SWITCH_PORT_NUM = SHARED_SWITCH_PORT_NUM;
 const port_t TOTAL_PORT_NUM = SHARED_PORT_MAX - SHARED_PORT_MIN + 1;
 
-const time_t AGING_TIME = SHARED_AGING_TIME_FOR_SWITCH;// 1 s
+const time_t AGING_TIME = SHARED_AGING_TIME_FOR_SWITCH;
 const time_t HALF_AGING_TIME = SHARED_AGING_TIME_FOR_SWITCH / 2;
 
-const mac_addr_t SWITCH_INNER_MAC = SHARED_SWITCH_INNER_MAC;
-const mac_addr_t NF_INNER_MAC = SHARED_NF_INNER_MAC;
+const mac_addr_t SWITCH_INNER_MAC = (bit<16>)SHARED_SWITCH_INNER_MAC_HI16 ++ (bit<32>)SHARED_SWITCH_INNER_MAC_LO32;
+const mac_addr_t NF_INNER_MAC = (bit<16>)SHARED_NF_INNER_MAC_HI16 ++ (bit<32>)SHARED_NF_INNER_MAC_LO32;
 
 /*************************************************************************
 *********************** H E A D E R S  ***********************************
@@ -138,8 +138,8 @@ struct metadata {
 
     /* ingress.get_transition_type -> ingress */
     bit<4>          transition_type;    // 0:in->out/nf, 1:out->in/nf, 2:nf->out, 3:nf->in, 4:in->nf, 5:out->nf, 6:update, 7:drop
+    bit<32>         cmp_eport;
     index_t         reverse_index;  
-    bit<SWITCH_PORT_NUM_LOG>         tmp_index;
     //bool            mac_match;
 
     /* ingress */
@@ -236,6 +236,7 @@ parser IngressParser(packet_in packet,
     }
 
     state mark_type_6 {
+        meta.cmp_eport = 16w0 ++ hdr.metadata.switch_port;
         meta.transition_type = 6;
         transition accept;
     }
@@ -318,6 +319,8 @@ parser IngressParser(packet_in packet,
 
     state parse_tcp {
         packet.extract(hdr.tcp);
+
+        meta.cmp_eport = 16w0 ++ hdr.tcp.dst_port;
         // The result is complement sum of all fields except src_port & dst_port. (Of course, "checksum" is not in "all")
         L4_csum.subtract({hdr.tcp.src_port, hdr.tcp.dst_port, hdr.tcp.checksum});
         L4_csum.subtract_all_and_deposit(meta.L4_partial_complement_sum);
@@ -333,6 +336,8 @@ parser IngressParser(packet_in packet,
 
     state parse_udp {
         packet.extract(hdr.udp);
+
+        meta.cmp_eport = 16w0 ++ hdr.udp.dst_port;
         //L4_csum.subtract({hdr.udp.src_port, hdr.udp.dst_port, hdr.udp.checksum});
         //meta.L4_partial_complement_sum = L4_csum.get();
         L4_csum.subtract({hdr.udp.src_port, hdr.udp.dst_port, hdr.udp.checksum});
@@ -363,73 +368,34 @@ control check_eport(
         inout metadata meta,
         in ingress_intrinsic_metadata_t ig_intr_md) {
 
-    Register<bit<16>, bit<16>>(1) help1;
-    Register<bit<16>, bit<16>>(1) help2;
-    Register<bit<16>, bit<16>>(1) help3;// 所有RegisterAction共享SALU，一个Register只有一个SALU
+    Register<bit<32>, bit<16>>(1, 0) help1;
 
-    RegisterAction<bit<16>, bit<16>, bit<4>>(help1) reg_check_tcp_eport = {
-        void apply(inout bit<16> reg, out bit<4> ret) {
-            if(PORT_MIN <= hdr.tcp.dst_port && hdr.tcp.dst_port <= PORT_MAX)
+    RegisterAction<bit<32>, bit<16>, bit<4>>(help1) reg_check_eport = {
+        void apply(inout bit<32> reg, out bit<4> ret) {
+            if((bit<32>)PORT_MIN <= meta.cmp_eport && meta.cmp_eport <= (bit<32>)PORT_MAX)
                 ret = 0;
             else 
                 ret = 7;// drop
         }
     };
-    RegisterAction<bit<16>, bit<16>, bit<4>>(help2) reg_check_udp_eport = {
-        void apply(inout bit<16> reg, out bit<4> ret) {
-            if(PORT_MIN <= hdr.udp.dst_port && hdr.udp.dst_port <= PORT_MAX)
-                ret = 0;
-            else 
-                ret = 7;
-        }
-    };
-    RegisterAction<bit<16>, bit<16>, bit<4>>(help3) reg_check_update_eport = {
-        void apply(inout bit<16> reg, out bit<4> ret) {
-            if(PORT_MIN <= hdr.metadata.switch_port && hdr.metadata.switch_port <= PORT_MAX)
-                ret = 0;
-            else 
-                ret = 7;
-        }
-    };
 
-    action check_tcp_eport() {
-        bit<4>tmp = reg_check_tcp_eport.execute(0);
+    action check() {
+        bit<4>tmp = reg_check_eport.execute(0);
         meta.transition_type = meta.transition_type | tmp;
         meta.ingress_end = (bool)tmp[0:0];
-        meta.reverse_index = hdr.tcp.dst_port - PORT_MIN;
+        meta.reverse_index = meta.cmp_eport[15:0] - PORT_MIN;
     }
-
-    action check_udp_eport() {
-        bit<4>tmp = reg_check_udp_eport.execute(0);
-        meta.transition_type = meta.transition_type | tmp;
-        meta.ingress_end = (bool)tmp[0:0];
-        meta.reverse_index = hdr.udp.dst_port - PORT_MIN;
-    }
-
-    action check_update_eport() {
-        bit<4>tmp = reg_check_update_eport.execute(0);
-        meta.transition_type = meta.transition_type | tmp;
-        meta.ingress_end = (bool)tmp[0:0];
-        meta.reverse_index = hdr.metadata.switch_port - PORT_MIN;
-    }
-
 
     apply {
         if(meta.transition_type == 0) {
             meta.ingress_end = false;
         }
-        else if(meta.transition_type == 1) {
-            if(meta.is_tcp) 
-                check_tcp_eport();
-            else 
-                check_udp_eport();
+        else if(meta.transition_type == 1 || meta.transition_type == 6) {
+            check();
         }
         else if((meta.transition_type & 0b1110) == 2) {//2,3
             meta.ingress_end = true;
         }
-        else if(meta.transition_type == 6) {
-            check_update_eport();
-        }    
         else if(meta.transition_type == 8) {
             meta.ingress_end = true;
         }
@@ -510,8 +476,8 @@ control send_out(
         else if((meta.transition_type & 0b1110) == 4){// 4, 5
             
             hdr.ethernet.ether_type = TYPE_METADATA;
-            hdr.ethernet.src_addr = 48w1;
-            hdr.ethernet.dst_addr = 48w2;
+            hdr.ethernet.src_addr = SWITCH_INNER_MAC;
+            hdr.ethernet.dst_addr = NF_INNER_MAC;
 
             hdr.metadata.src_addr = meta.id.src_addr;
             hdr.metadata.dst_addr = meta.id.dst_addr;
@@ -554,8 +520,8 @@ control send_out(
             }
         }
         else if(meta.transition_type == 6) {
-            hdr.ethernet.src_addr = 48w1;
-            hdr.ethernet.dst_addr = 48w2;
+            hdr.ethernet.src_addr = SWITCH_INNER_MAC;
+            hdr.ethernet.dst_addr = NF_INNER_MAC;
 
             set_egress_port(meta.nf_port_hdr.nf_port);
         }
@@ -576,7 +542,7 @@ control Ingress(
         inout ingress_intrinsic_metadata_for_deparser_t ig_intr_dprs_md,
         inout ingress_intrinsic_metadata_for_tm_t ig_intr_tm_md) {
 
-    Register<time_t, index_t>(1) get_update_timeout_helper; 
+    Register<time_t, index_t>(1, 0) get_update_timeout_helper; 
 
     Hash<bit<SWITCH_PORT_NUM_LOG>>(HashAlgorithm_t.CRC16) hashmap;
     
@@ -779,7 +745,11 @@ control Ingress(
                 meta.update_timeout = 1;
                 hdr.metadata.version = 0;
                 ipv4_flow_id_t id = meta.id;
+#ifdef NAT_TEST
+                hdr.metadata.index = 1;
+#else 
                 hdr.metadata.index[SWITCH_PORT_NUM_LOG-1:0] = hashmap.get({id.src_addr, id.dst_addr, id.src_port, id.dst_port, id.protocol, id.zero});
+#endif
                 //写成index = (bit<16>)hashmap会多占用一个stage，因为index高位需要赋0，而0不是凭空而来，需要一个额外stage
             }
             else if(meta.transition_type == 6) {
