@@ -1,0 +1,6 @@
+1. (not a BUG) MTU is smaller than ethernet.
+2. PORT_MAX cannot bigger than 1<<15.
+3. nf.cpp will get into a dead loop when PORT_MAX==65535.
+4. Eport checking in switch.p4 is not correct.
+
+These BUGs have been fixed in tofino_v2. (Except BUG 1.)
