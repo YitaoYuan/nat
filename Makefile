@@ -10,7 +10,8 @@ build/nf: src/nf.cpp ${DEPENDS} | build
 
 build/nat/tofino/pipe/switch.bfa: src/switch.p4 ${DEPENDS} build/Makefile | build
 	cd build; make && make install
-	echo "Take up `cat $@ | grep -c stage` stages"
+	@echo "Take up `cat $@ | grep -c -E "stage.+ingress"` ingress stages"
+	@echo "Take up `cat $@ | grep -c -E "stage.+egress"` egress stages"
 
 build/Makefile: mycmake.sh | build
 	./mycmake.sh
