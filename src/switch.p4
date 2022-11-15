@@ -186,7 +186,7 @@ parser IngressParser(packet_in packet,
     state start {
         packet.extract(ig_intr_md);
 
-        meta.time = ig_intr_md.ingress_mac_tstamp[39:24];// truncate
+        meta.time = ig_intr_md.ingress_mac_tstamp[SHARED_TIME_OFFSET+15:SHARED_TIME_OFFSET];// truncate
         // meta.time *= 2^16/1000
         
         transition select(ig_intr_md.resubmit_flag) {
@@ -273,7 +273,6 @@ parser IngressParser(packet_in packet,
     }
 
     state initialize_metadata{
-        /*
         hdr.metadata.setValid();
         meta.metadata_checksum_err = false;
 
@@ -287,15 +286,16 @@ parser IngressParser(packet_in packet,
         hdr.metadata.protocol = l3l4.protocol;
         hdr.metadata.zero = 0;
 
-        hdr.metadata.switch_time = meta.time;
-
+        hdr.metadata.switch_time = ig_intr_md.ingress_mac_tstamp[SHARED_TIME_OFFSET+15:SHARED_TIME_OFFSET];
+        
         meta.id.src_addr = l3l4.src_addr;
         meta.id.dst_addr = l3l4.dst_addr;
         meta.id.src_port = l3l4.src_port;
         meta.id.dst_port = l3l4.dst_port;
         meta.id.protocol = l3l4.protocol;
         meta.id.zero = 0;
-        */
+        
+        
         transition parse_ipv4;
     }
 
@@ -578,8 +578,9 @@ control Ingress(
 
     Register<time_t, flow_num_t>(1, 0) get_update_timeout_helper; 
 
-    Hash<bit<SHARED_SWITCH_FLOW_NUM_LOG>>(HashAlgorithm_t.CRC32) hashmap0;
-    Hash<bit<SHARED_SWITCH_FLOW_NUM_LOG>>(HashAlgorithm_t.CRC32) hashmap1;
+    CRCPolynomial<bit<32>>(32w0x04C11DB7, false, false, false, 32w0, 32w0) polynomial;
+    Hash<bit<SHARED_SWITCH_FLOW_NUM_LOG>>(HashAlgorithm_t.CRC32, polynomial) hashmap0;
+    Hash<bit<SHARED_SWITCH_FLOW_NUM_LOG>>(HashAlgorithm_t.CRC32, polynomial) hashmap1;
     
     Register<version_t, flow_num_t>((bit<32>)SWITCH_FLOW_NUM, 0) version;
 

@@ -28,16 +28,13 @@ echo "Boot switch in the background."
 
 $SDE/run_switchd.sh -p "$PROGRAM" > /dev/null 2>&1 &
 
-if [ "$1" == "--skip-table" ]
-then
-	:
-else
-	echo -n "Initializing tables... "
 
-	$SDE/run_bfshell.sh -b $BFRT_PRELOAD_FILE > /dev/null 2>&1
+echo -n "Initializing tables... "
 
-	echo "Done."
-fi
+$SDE/run_bfshell.sh -b $BFRT_PRELOAD_FILE > /dev/null 2>&1
+
+echo "Done."
+
 
 echo -n "Configuring ports... "
 

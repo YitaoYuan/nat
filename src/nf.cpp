@@ -9,7 +9,15 @@
 #include <queue>
 #include <cstdlib>
 #include <arpa/inet.h>
+
 #include "shared_metadata.h"
+#include "type.h"
+#include "hdr.h"
+
+#include "hash.cpp"
+#include "list.cpp"
+#include "checksum.cpp"
+#include "heavy_hitter.cpp"
 
 #ifdef DEBUG
 #define debug_printf(...) fprintf(stderr, __VA_ARGS__)
@@ -22,143 +30,15 @@ using std::queue;
 using std::make_pair;
 using std::swap;
 
-typedef unsigned short port_t;
-typedef unsigned int ip_addr_t;
-typedef unsigned int mytime_t;
-typedef unsigned short len_t;
-typedef unsigned short checksum_t;
-typedef unsigned char version_t;
-typedef unsigned char u8;
-typedef unsigned short u16;
-typedef unsigned int u32;
-typedef unsigned long long u64;
-
-/*
- * Without additional specification, all value in these structs are in network byte order
- */
-struct ethernet_t{
-    u8 dst_addr[6];
-    u8 src_addr[6];
-    u16 ether_type;
-}__attribute__ ((__packed__));
-
-struct flow_id_t{
-    ip_addr_t   src_addr;
-    ip_addr_t   dst_addr;
-    port_t      src_port;
-    port_t      dst_port;
-    u8      protocol;
-    u8      zero;
-    bool operator == (const flow_id_t &y) const{ 
-        return memcmp(this, &y, sizeof(y)) == 0;
-    }
-}__attribute__ ((__packed__));
-
-struct map_entry_t{
-    flow_id_t id;
-    port_t eport;
-}__attribute__ ((__packed__));
-
-struct nat_metadata_t{
-    flow_id_t   id;
-    port_t      switch_port;
-    version_t   version;
-    u8          zero      : 4;
-    u8          is_reject : 1;
-    u8          is_update : 1;
-    u8          is_to_out : 1;
-    u8          is_to_in  : 1;
-    port_t      index;
-    mytime_t    switch_time;
-    checksum_t  checksum;
-}__attribute__ ((__packed__));
-
-struct ip_t{
-    u8 unused[9];
-    u8 protocol;
-    checksum_t checksum;
-    ip_addr_t src_addr;
-    ip_addr_t dst_addr;
-}__attribute__ ((__packed__));
-
-struct tcp_t{
-    port_t src_port;
-    port_t dst_port;
-    u8 unused1[12];
-    checksum_t checksum;
-    u8 unused2[2];
-    char payload[];
-}__attribute__ ((__packed__));
-
-struct udp_t{
-    port_t src_port;
-    port_t dst_port;
-    u8 unused[2];
-    checksum_t checksum;
-    char payload[];
-}__attribute__ ((__packed__));
-
-union L4_header_t{
-    tcp_t tcp;
-    udp_t udp;
-};
-
-struct hdr_t{
-    ethernet_t ethernet;
-    nat_metadata_t metadata;
-    ip_t ip;
-    L4_header_t L4_header;
-};
-
-enum list_type: u8{
-    avail = 0,
-    inuse = 1,
-    sw = 2
-};
-
-struct list_entry_t{
-    flow_id_t id;// net
-    port_t index_host;// host
-    mytime_t timestamp_host;// host 
-    list_type type;// host
-    bool is_waiting;
-    list_entry_t *l, *r;
-};
-
-struct Hash{
-    size_t operator ()(const flow_id_t &id) const{
-        return (u64)id.src_addr ^ (u64)id.dst_addr << 32 ^ 
-            (u64)id.src_port ^ (u64)id.dst_port << 16 ^ (u64)id.protocol << 32;
-    }
-};
-
-struct wait_entry_t{
-    map_entry_t map;// net
-    version_t version;// net (u8 is the same)
-    port_t switch_port;// net
-    mytime_t switch_time;// net
-    mytime_t first_req_time_host;
-    mytime_t last_req_time_host;// host
-    wait_entry_t *l, *r;
-    bool is_waiting;
-};
-
-
 
 /*
  * All these constants are in host's byte order
  */
+const flow_num_t SWITCH_FLOW_NUM = SHARED_SWITCH_FLOW_NUM;
+const flow_num_t TOTAL_FLOW_NUM = SHARED_TOTAL_FLOW_NUM;
 
-const ip_addr_t NAT_ADDR = SHARED_NAT_ADDR;
-
-const port_t PORT_MIN = SHARED_PORT_MIN;
-const port_t PORT_MAX = SHARED_PORT_MAX;// included
-const port_t TOTAL_PORT_NUM = PORT_MAX - PORT_MIN + 1;
-const port_t SWITCH_PORT_NUM = SHARED_SWITCH_PORT_NUM;
-const port_t NF_PORT_NUM = TOTAL_PORT_NUM - SWITCH_PORT_NUM;
-
-const u32 AGING_TIME_US = SHARED_AGING_TIME_US;
-const u32 WAIT_TIME_US = 10000;// 10 ms
+const host_time_t AGING_TIME_US = SHARED_AGING_TIME_US;
+const host_time_t WAIT_TIME_US = 10000;// 10 ms
 
 const u16 TYPE_IPV4 = 0x800;
 const u16 TYPE_METADATA = SHARED_TYPE_METADATA;
@@ -166,10 +46,48 @@ const u16 TYPE_METADATA = SHARED_TYPE_METADATA;
 const u8 TCP_PROTOCOL = 0x06;
 const u8 UDP_PROTOCOL = 0x11;
 
-const u32 max_frame_size = 1514;
+const u32 MAX_FRAME_SIZE = 1514;
+const size_t PACKET_WITH_META_LEN = sizeof(ethernet_t) + sizeof(nat_metadata_t);
+const size_t MIN_UDP_LEN = PACKET_WITH_META_LEN + sizeof(ip_t) + sizeof(udp_t);
+const size_t MIN_TCP_LEN = PACKET_WITH_META_LEN + sizeof(ip_t) + sizeof(tcp_t);
 
-const u32 HEAVY_HITTER_SIZE = 8;
-const u32 HEAVY_HITTER_REBOOT_THRESHOLD = 128;
+const u32 MAX_BORROW_RETRY = 3;
+
+enum list_type: u8{
+    avail = 0,
+    inuse = 1,
+    sw = 2
+};
+
+struct flow_entry_t{
+    map_entry_t map;// net
+    flow_num_t val_index_host;
+    flow_num_t id_index_host;// host
+    host_time_t timestamp_host;// host 
+    list_type type;// host
+    bool is_waiting;
+    flow_entry_t *l, *r;
+};
+
+struct wait_entry_t{
+    flow_entry_t *new_flow;
+    flow_entry_t *old_flow;// we don't care old_flow->id
+    version_t version;// net (u8 is the same)
+    switch_time_t switch_time;// net
+    host_time_t first_req_time_host;
+    host_time_t last_req_time_host;// host
+    bool is_waiting;
+    wait_entry_t *l, *r;
+};
+
+template<typename T>
+flow_num_t get_index(const T &data)
+{
+    my_hash<T> hasher;
+    return hasher(data) % SWITCH_FLOW_NUM;
+}
+
+
 /*
  * predefined MAC address is in network byte order
  */
@@ -186,127 +104,52 @@ MAC_pair NF_INNER_MAC_PAIR = {htons(SHARED_NF_INNER_MAC_HI16), htonl(SHARED_NF_I
 const u8 *SWITCH_INNER_MAC = (u8 *) &SWITCH_INNER_MAC_PAIR;
 const u8 *NF_INNER_MAC = (u8 *) &NF_INNER_MAC_PAIR;
 
+
 pcap_t *device;
 // for regular packet
-u8 buf[max_frame_size] __attribute__ ((aligned (64)));
+u8 buf[MAX_FRAME_SIZE] __attribute__ ((aligned (64)));
 // for updating message
 u8 metadata_buf[sizeof(ethernet_t) + sizeof(nat_metadata_t)] __attribute__ ((aligned (64)));
 /*
  * all bytes in these data structure are in network order
  */
-unordered_map<flow_id_t, list_entry_t*, Hash>map;
-list_entry_t reverse_map[PORT_MAX - PORT_MIN + 1];
-list_entry_t avail_port_leader_data, inuse_port_leader_data, sw_port_leader_data;
-list_entry_t *avail_port_leader, *inuse_port_leader, *sw_port_leader;
-//如果要追求通用性的话，reverse_map就应该用list而不是数组，map直接映射到iterator
-//此时应该再开一个map映射eport到iterator
+unordered_map<flow_id_t, flow_entry_t*, my_hash<flow_id_t>, mem_equal<flow_id_t> >id_map;
+unordered_map<flow_val_t, flow_entry_t*, my_hash<flow_val_t>, mem_equal<flow_val_t> >val_map;
 
-wait_entry_t wait_set[SWITCH_PORT_NUM];
-wait_entry_t wait_set_leader_data;
-wait_entry_t *wait_set_leader;
+flow_entry_t inuse_head, sw_head, avail_head[SWITCH_FLOW_NUM];
+flow_entry_t flow_entry[TOTAL_FLOW_NUM];
 
-template<typename COUNTER_T, typename ID_T>
-struct heavy_hitter_entry_t{
-    COUNTER_T cnt;
-    ID_T id;
-};
+wait_entry_t wait_set[SWITCH_FLOW_NUM];
+wait_entry_t wait_set_head;
 
-template<typename COUNTER_T, typename ID_T>
-struct heavy_hitter_t{
-    heavy_hitter_entry_t<COUNTER_T, ID_T> entry[HEAVY_HITTER_SIZE];
-    // entry[0].cnt is max, entry[HEAVY_HITTER_SIZE-1].cnt is min
-    int size, total_cnt;
-    void init() {
-        size = 0;
-        total_cnt = 0;
-        memset(entry, 0, sizeof(entry));
+heavy_hitter_t<u8, flow_entry_t*, 8, 128> heavy_hitter[SWITCH_FLOW_NUM];
+
+void heavy_hitter_count(flow_num_t id_index, flow_entry_t* entry)
+{
+    heavy_hitter[id_index].count(entry);
+}
+
+flow_entry_t* heavy_hitter_get(flow_num_t id_index)
+{
+    auto &hh = heavy_hitter[id_index];
+    for(int i = 0; i < hh.size; i++) {
+        flow_entry_t *entry = hh.entry[i].id;
+        if(entry->type == list_type::inuse && entry->id_index_host == id_index)
+            return hh.entry[i].id;
+        // if this has timeout, it will be locked and will not be moved to list "avail"
     }
-    void count(ID_T id) {
-        if(total_cnt == HEAVY_HITTER_REBOOT_THRESHOLD) init();
-        int i;
-        for(i = 0; i < size; i++) if(entry[i].id == id) break;
-        if(i >= size) {
-            if(i == HEAVY_HITTER_SIZE) i--;//满了就用最后一个
-            else size++;
-            entry[i].id = id;
-        }
-        entry[i].cnt++;
-        total_cnt++;
-        // re-sort
-        for(i = i-1; i >= 0; i--) if(entry[i].cnt < entry[i+1].cnt) swap(entry[i], entry[i+1]);
-    }
-};
+    return NULL;
+}
 
-heavy_hitter_t<u16, port_t> heavy_hitter[SWITCH_PORT_NUM];
 
 void stop(int signo)
 {
     _exit(0);
 }
 
-template<typename T>
-void list_erase(T *entry)
+void print_map(flow_id_t id, flow_val_t val, flow_num_t index)
 {
-    entry->l->r = entry->r;
-    entry->r->l = entry->l;
-    entry->l = NULL;
-    entry->r = NULL;
-}
-
-template<typename T>
-void list_insert_before(T *r, T *entry)
-{
-    T *l = r->l;
-    l->r = entry;
-    r->l = entry;
-    entry->l = l;
-    entry->r = r;
-}
-
-template<typename T>
-void list_move_to(T *r, T *entry)
-{
-    list_erase(entry);
-    list_insert_before(r, entry);
-}
-
-template<typename T>
-void list_move_to_back(T *leader, T *entry)
-{
-    list_move_to(leader, entry);
-}
-
-template<typename T>
-void list_move_to_front(T *leader, T *entry)
-{
-    list_move_to(leader->r, entry);
-}
-
-template<typename T>
-T *list_front(T *leader)
-{
-    return leader->r;
-}
-
-template<typename T>
-bool list_empty(T *leader)
-{
-    return leader->l == leader;
-}
-
-port_t entry_to_port_host(list_entry_t *entry)
-{
-    return (port_t)(entry - reverse_map) + PORT_MIN;
-}
-
-list_entry_t *port_host_to_entry(port_t port)
-{
-    return &reverse_map[port - PORT_MIN];
-}
-
-void print_map(flow_id_t id, port_t eport_host, port_t index)
-{
-    debug_printf("(src=%d.%d.%d.%d:%d, dst=%d.%d.%d.%d:%d, protocal=%d) -> (eport %d, index %d)\n", 
+    debug_printf("(src=%d.%d.%d.%d:%d, dst=%d.%d.%d.%d:%d, protocal=%d) -> (%d.%d.%d.%d:%d, index %d)\n", 
         ((u8*)&id.src_addr)[0],
         ((u8*)&id.src_addr)[1],
         ((u8*)&id.src_addr)[2],
@@ -321,97 +164,51 @@ void print_map(flow_id_t id, port_t eport_host, port_t index)
 
         id.protocol,
 
-        eport_host,
+        ((u8*)&val.wan_addr)[0],
+        ((u8*)&val.wan_addr)[1],
+        ((u8*)&val.wan_addr)[2],
+        ((u8*)&val.wan_addr)[3],
+        val.wan_port,
+        
         index
     );
 }
 
 void nf_init()
-{
-    avail_port_leader = &avail_port_leader_data;
-    inuse_port_leader = &inuse_port_leader_data;
-    sw_port_leader = &sw_port_leader_data;
-    avail_port_leader->l = avail_port_leader->r = avail_port_leader;
-    inuse_port_leader->l = inuse_port_leader->r = inuse_port_leader;
-    sw_port_leader->l = sw_port_leader->r = sw_port_leader;
-    
-    /*
-    for(port_t port = PORT_MIN; port < PORT_MIN + SWITCH_PORT_NUM; port++) {
-        list_entry_t *entry = port_host_to_entry(port);
-        entry->type = list_type::sw;
-        list_insert_before(sw_port_leader, entry);
+{       
+    crc_initialize();
+
+    inuse_head.l = inuse_head.r = &inuse_head;
+    sw_head.l = sw_head.r = &sw_head;
+
+    for(flow_num_t i = 0; i < SWITCH_FLOW_NUM; i++) {
+        avail_head[i].l = avail_head[i].r = &avail_head[i];
     }
-    */
-    assert(PORT_MIN <= PORT_MAX);
+
+    ip_addr_t wan_addr_base = 0xC0A802FE;
+    port_t port_min = (1<<15);
+    flow_num_t port_num_per_addr = (1<<16) - port_min;
+
+    for(flow_num_t i = 0; i < TOTAL_FLOW_NUM; i++) {// BUG fixed !! don't use "port <= PORT_MAX"
+        ip_addr_t addr_offset = i / port_num_per_addr;
+        ip_addr_t wan_addr = wan_addr_base - addr_offset;
+        port_t wan_port = port_min + i % port_num_per_addr;
+
+        flow_entry_t &entry = flow_entry[i];
+        entry.map.val = {htonl(wan_addr), htons(wan_port)};
+        entry.val_index_host = get_index(entry.map.val);
+        entry.type = list_type::avail;
+        entry.is_waiting = 0;
         
-    for(port_t port = PORT_MIN; ; port++) {// BUG fixed !! don't use "port <= PORT_MAX"
-        list_entry_t *entry = port_host_to_entry(port);
-        entry->type = list_type::avail;
-        list_insert_before(avail_port_leader, entry);
-        if(port >= PORT_MAX) break;
+        list_insert_before(&avail_head[entry.val_index_host], &entry);
+
+        val_map.insert(make_pair(entry.map.val, &entry));
     }
 
-    wait_set_leader = &wait_set_leader_data;
-    wait_set_leader->l = wait_set_leader->r = wait_set_leader;
+    wait_set_head.l = wait_set_head.r = &wait_set_head;
 
-    for(int i = 0; i < SWITCH_PORT_NUM; i++)
+    for(flow_num_t i = 0; i < SWITCH_FLOW_NUM; i++)
         heavy_hitter[i].init();
-}
-
-inline checksum_t negative(checksum_t x) {
-    //将x的补码表示看成二进制串
-    //将二进制串看成反码表示
-    //对反码表示求负
-    return ~x;    
-}
-
-inline checksum_t add(checksum_t x, checksum_t y) {
-    //将二进制串看成反码表示
-    //对反码表示求和
-    u32 res = (u32)x + (u32)y;
-    return (checksum_t)((res & 0xffff) + (res >> 16));
-}
-
-inline checksum_t sub(checksum_t x, checksum_t y) {
-    return add(x, negative(y));
-}
-
-inline checksum_t make_zero_negative(checksum_t x) {
-    //将反码+0变为-0
-    return x == 0 ? ~x : x;
-}
-
-checksum_t compute_checksum(nat_metadata_t &hdr_metadata) {
-    /*
-    It is acceptable to only verify checksum of header "metadata"
-    because we have aging mechanism.
-    Wrong flow state will be removed by that.
-    */
-    checksum_t *l = (checksum_t *)&hdr_metadata;
-    checksum_t *r = (checksum_t *)((u8*)&hdr_metadata + sizeof(nat_metadata_t));
-    u32 res = 0;
-    for(checksum_t *i = l; i < r; i++) 
-        res += ntohs(*i);
-    res = (res & 0xffff) + (res >> 16);
-    res = (res & 0xffff) + (res >> 16);
-    return ~(checksum_t)res;
-}
-
-void heavy_hitter_count(port_t bucket_index, port_t eport)
-{
-    heavy_hitter[bucket_index].count(eport);
-}
-
-port_t heavy_hitter_get(port_t bucket_index)
-{
-    auto &hh = heavy_hitter[bucket_index];
-    for(int i = 0; i < hh.size; i++) {
-        list_entry_t *entry = port_host_to_entry(hh.entry[i].id);
-        if(entry->type == list_type::inuse && entry->index_host == bucket_index)
-            return hh.entry[i].id;
-        // if this has timeout, it will be locked and will not be moved to list "avail"
-    }
-    assert(false);
 }
 
 void send_back(hdr_t * hdr, size_t len)
@@ -422,26 +219,27 @@ void send_back(hdr_t * hdr, size_t len)
     pcap_sendpacket(device, (u_char *)hdr, len);
 }
 
-void send_update(port_t index)
+void send_update(flow_num_t index, bool force_update)
 {
     hdr_t *hdr = (hdr_t *)metadata_buf;
     // MAC address is useless between nf & switch
 
-    hdr->metadata.id = wait_set[index].map.id;
-    hdr->metadata.switch_port = wait_set[index].map.eport;
+    hdr->metadata.map = wait_set[index].new_flow->map;
     hdr->metadata.version = wait_set[index].version;
 
-    hdr->metadata.zero = 0;
-    hdr->metadata.is_update = 1;
-    hdr->metadata.is_to_out = 0;
-    hdr->metadata.is_to_in = 0;
+    hdr->metadata.update = force_update;
+    hdr->metadata.type = 6;
 
-    hdr->metadata.index = htons(index);
+    hdr->metadata.index = htonl(index);
 
     hdr->metadata.switch_time = wait_set[index].switch_time;// not necessary to convert
 
     hdr->metadata.checksum = 0;// clear to recalculate
-    hdr->metadata.checksum = htons(make_zero_negative(compute_checksum(hdr->metadata)));
+
+    net_checksum_calculator sum;
+    sum.add(&hdr->metadata, sizeof(hdr->metadata));
+    
+    hdr->metadata.checksum = sum.checksum();
 
     hdr->ethernet.ether_type = htons(TYPE_METADATA);
     send_back(hdr, sizeof(hdr->ethernet) + sizeof(hdr->metadata));
@@ -449,168 +247,161 @@ void send_update(port_t index)
     debug_printf("\nsend update\n");
     //debug_printf("primary\n");
     //print_map(wait_set[index].primary_map.id, ntohs(wait_set[index].primary_map.eport), index);
-    debug_printf("old switch port: %d\n", wait_set[index].switch_port);
-    debug_printf("new map: ");
-    print_map(wait_set[index].map.id, ntohs(wait_set[index].map.eport), index);
+    debug_printf("old map:\n");
+    print_map((flow_id_t){0,0,0,0,0,0}, wait_set[index].old_flow->map.val, index);
+    debug_printf("new map:\n");
+    print_map(wait_set[index].new_flow->map.id, wait_set[index].new_flow->map.val, index);
+    
     debug_printf("version %u -> %u\n", wait_set[index].version - 1, wait_set[index].version);
 }
 
+void try_add_update(flow_num_t wait_set_index, nat_metadata_t &metadata, host_time_t timestamp)
+{
+    if(!wait_set[wait_set_index].is_waiting) {
+        flow_entry_t *new_entry = heavy_hitter_get(wait_set_index);
 
+        if(new_entry == NULL) {
+            return;
+        }
 
-void forward_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
+        assert(metadata.map.val.wan_port != 0);//If we have preload process, this is always true.
+
+        auto val_map_it = val_map.find({metadata.map.val.wan_addr, metadata.map.val.wan_port});
+        assert(val_map_it != val_map.end());
+
+        flow_entry_t *old_entry = val_map_it->second;
+        assert(old_entry->type == list_type::sw);
+
+        wait_set[wait_set_index] = {new_entry, old_entry, (u8)(metadata.version + 1), 
+                                    metadata.switch_time, timestamp, timestamp, 
+                                    true, NULL, NULL};
+            
+        // map entry
+        new_entry->is_waiting = 1;// locked, it will not be moved to list "avail" immediately
+
+        list_insert_before(&wait_set_head, &wait_set[wait_set_index]);// == push_back
+        send_update(wait_set_index, 0);
+    }
+}
+
+void forward_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
 {
 // verify
-    // verify ip
-    if(packet_len < sizeof(ethernet_t) + sizeof(nat_metadata_t) + sizeof(ip_t)) return;
+    nat_metadata_t &metadata = hdr->metadata;
     
-    if(hdr->ip.src_addr != hdr->metadata.id.src_addr 
-        || hdr->ip.dst_addr != hdr->metadata.id.dst_addr 
-        || hdr->ip.protocol != hdr->metadata.id.protocol)
+    bool is_tcp = metadata.map.id.protocol == TCP_PROTOCOL;
+    if((is_tcp && packet_len < MIN_TCP_LEN) || (!is_tcp && packet_len < MIN_UDP_LEN))
         return;
-    // verify tcp/udp
-    bool is_tcp;
-    if(hdr->ip.protocol == TCP_PROTOCOL) {// 8 bit, OK
-        if(packet_len < sizeof(ethernet_t) + sizeof(nat_metadata_t) + sizeof(ip_t) + sizeof(tcp_t))
-            return;
-        if(hdr->L4_header.tcp.src_port != hdr->metadata.id.src_port
-            || hdr->L4_header.tcp.dst_port != hdr->metadata.id.dst_port)
-            return;
-        is_tcp = 1;
-    }
-    else if(hdr->ip.protocol == UDP_PROTOCOL) {
-        if(packet_len < sizeof(ethernet_t) + sizeof(nat_metadata_t) + sizeof(ip_t) + sizeof(udp_t))
-            return;
-        if(hdr->L4_header.udp.src_port != hdr->metadata.id.src_port
-            || hdr->L4_header.udp.dst_port != hdr->metadata.id.dst_port)
-            return;
-        is_tcp = 0;
-    }
-    else return;
 
 // allocate flow state for new flow
-    nat_metadata_t &metadata = hdr->metadata;
+    
     // things in map are in network byte order
-    auto it = map.find(metadata.id);
-    if(it == map.end()) {// a new flow
-        if(list_empty(avail_port_leader)) return;// no port available, drop
-        list_entry_t *entry = list_front(avail_port_leader);
+    auto id_map_it = id_map.find(metadata.map.id);
+    if(id_map_it == id_map.end()) {// a new flow
+        flow_num_t id_index_host = get_index(metadata.map.id);
+        assert(id_index_host == ntohl(metadata.index));
+
+        flow_num_t index_select = id_index_host;
         
-        entry->id = metadata.id;
-        entry->index_host = ntohs(metadata.index);
+        u32 retry = 0;
+        while(list_empty(&avail_head[index_select])) {
+            retry ++;
+            if(retry > MAX_BORROW_RETRY) break;
+            index_select = (flow_num_t)(rand() ^ (rand() << 16)) % SWITCH_FLOW_NUM;
+        }
+
+        if(list_empty(&avail_head[index_select])) return;// too full to allocate, drop
+
+        flow_entry_t *entry = list_front(&avail_head[index_select]);
+        
+        entry->map.id = metadata.map.id;
+        entry->id_index_host = id_index_host;
         entry->type = list_type::inuse;
         entry->is_waiting = 0;
-        list_move_to_back(inuse_port_leader, entry);
+        list_move_to_back(&inuse_head, entry);
 
-        it = map.insert(make_pair(metadata.id, entry)).first;
+        id_map_it = id_map.insert(make_pair(metadata.map.id, entry)).first;
     }
 // refresh flow's timestamp
-    list_entry_t *entry = it->second;
-    port_t eport_h = entry_to_port_host(entry);
-    port_t eport_n = htons(eport_h);
+    flow_entry_t *entry = id_map_it->second;
     entry->timestamp_host = timestamp;// host
 
     assert(entry->type == list_type::inuse);
-    list_move_to_back(inuse_port_leader, entry);
+    list_move_to_back(&inuse_head, entry);
 
 // heavy hitter detect
-    port_t index = entry->index_host;
-    heavy_hitter_count(index, entry_to_port_host(entry));
-
-// translate
-    checksum_t delta = 0;// host
-    delta = add(delta, sub(NAT_ADDR >> 16, ntohs(hdr->ip.src_addr & 0xffff)));
-    delta = add(delta, sub(NAT_ADDR & 0xffff, ntohs(hdr->ip.src_addr >> 16)));
-    hdr->ip.src_addr = htonl(NAT_ADDR);
-    // If the original checksum is wrong, the new one will also be wrong, 
-    // and the packet will be droped by switch later.
-    hdr->ip.checksum = htons(make_zero_negative(sub(ntohs(hdr->ip.checksum), delta)));
-    if(is_tcp) {
-        delta = add(delta, sub(eport_h, ntohs(hdr->L4_header.tcp.src_port)));
-        hdr->L4_header.tcp.src_port = eport_n;// 
-        hdr->L4_header.tcp.checksum = htons(make_zero_negative(sub(ntohs(hdr->L4_header.tcp.checksum), delta)));
-    }
-    else {
-        delta = add(delta, sub(eport_h, ntohs(hdr->L4_header.udp.src_port)));
-        hdr->L4_header.udp.src_port = eport_n;
-        if(hdr->L4_header.udp.checksum != 0)// 0 is same for n & h
-            hdr->L4_header.udp.checksum = htons(make_zero_negative(sub(ntohs(hdr->L4_header.udp.checksum), delta)));
-    }
-
-// fill hdr
-    //metadata.secondary_map.eport = eport_n;
-    //delta = eport_h;
-// require to update switch's mapping
-
-    if(metadata.is_update) {//
-        if(!wait_set[index].is_waiting) {
-            port_t swap_port_h = heavy_hitter_get(index);
-            port_t swap_port_n = htons(swap_port_h);
-            list_entry_t *swap_entry = port_host_to_entry(swap_port_h);
-            flow_id_t &swap_id = swap_entry->id;
-
-            wait_set[index] = {{swap_id, swap_port_n}, (u8)(metadata.version + 1), 
-                                metadata.switch_port, metadata.switch_time, timestamp, timestamp, 
-                                NULL, NULL, true};
-            // map entry
-            swap_entry->is_waiting = 1;// locked, it will not be moved to list "avail" immediately
-
-            list_insert_before(wait_set_leader, &wait_set[index]);// == push_back
-            send_update(index);
-        }
-        //clear this bit, 因为在返回的包中is_update和is_to_in/out最多只有一个为1
-        metadata.is_update = 0;
-        delta = sub(0x0000, 0x0020);
-        metadata.checksum = htons(make_zero_negative(sub(ntohs(metadata.checksum), delta)));
+    if(entry->id_index_host == entry->val_index_host) {
+        // it is not a borrowed entry
+        heavy_hitter_count(entry->val_index_host, entry);
     }
     
+
+// translate
+    net_checksum_calculator sum;
+
+    sum.sub(&hdr->ip.src_addr, 4);
+    hdr->ip.src_addr = entry->map.val.wan_addr;
+    sum.add(&hdr->ip.src_addr, 4);
+
+    hdr->ip.checksum = sum.checksum(hdr->ip.checksum);
+    if(is_tcp) {
+        sum.sub(hdr->L4_header.tcp.src_port);
+        hdr->L4_header.tcp.src_port = entry->map.val.wan_port;// 
+        sum.add(hdr->L4_header.tcp.src_port);
+
+        hdr->L4_header.tcp.checksum = sum.checksum(hdr->L4_header.tcp.checksum);
+    }
+    else {
+        sum.sub(hdr->L4_header.udp.src_port);
+        hdr->L4_header.udp.src_port = entry->map.val.wan_port;
+        sum.add(hdr->L4_header.udp.src_port);
+
+        if(hdr->L4_header.udp.checksum != 0)// 0 is same for n & h
+            hdr->L4_header.udp.checksum = sum.checksum(hdr->L4_header.udp.checksum);
+    }
+
+// try add update
+    if(metadata.update) {//
+        try_add_update(entry->id_index_host, metadata, timestamp);
+    }
+
+// reset "update" & "type"
+    net_checksum_calculator metadata_sum;
+    metadata_sum.sub(*(checksum_t*)&metadata.version);// "version" is beside "update" & "type"
+    metadata.update = 0;
+    metadata.type = 2;
+    metadata_sum.add(*(checksum_t*)&metadata.version);
+
+    metadata.checksum = metadata_sum.checksum(metadata.checksum);
+
 #ifdef NAT_TEST
     // this does not change checksum
     if(is_tcp) swap(*(checksum_t*)(hdr->L4_header.tcp.payload), *(checksum_t*)(hdr->L4_header.tcp.payload + 2));
     else swap(*(checksum_t*)(hdr->L4_header.udp.payload), *(checksum_t*)(hdr->L4_header.udp.payload + 2));
 #endif
-
 // send back
     send_back(hdr, packet_len);
 }
 
-void backward_process(mytime_t timestamp, len_t packet_len, hdr_t * const hdr)
+void backward_process(host_time_t timestamp, len_t packet_len, hdr_t * const hdr)
 {
-    /*
-     * 注意，对于反向的包，其metadata部分只有id和is_to_in/out是可用的，其余都是0
-     */
+    nat_metadata_t &metadata = hdr->metadata;
 
 // verify
-    if(packet_len < sizeof(ethernet_t) + sizeof(nat_metadata_t) + sizeof(ip_t)) return;
+    bool is_tcp = metadata.map.id.protocol == TCP_PROTOCOL;
+    if((is_tcp && packet_len < MIN_TCP_LEN) || (!is_tcp && packet_len < MIN_UDP_LEN))
+        return;
 
-    bool is_tcp;
-    ip_addr_t src_addr = hdr->ip.src_addr;
-    port_t eport_n, src_port;
-    if(hdr->ip.protocol == TCP_PROTOCOL) {// 8 bit, OK
-        if(packet_len < sizeof(ethernet_t) + sizeof(nat_metadata_t) + sizeof(ip_t) + sizeof(tcp_t))
-            return;
-        is_tcp = 1;
-        eport_n = hdr->L4_header.tcp.dst_port;
-        src_port = hdr->L4_header.tcp.src_port;
-    }
-    else if(hdr->ip.protocol == UDP_PROTOCOL) {
-        if(packet_len < sizeof(ethernet_t) + sizeof(nat_metadata_t) + sizeof(ip_t) + sizeof(udp_t))
-            return;
-        is_tcp = 0;
-        eport_n = hdr->L4_header.udp.dst_port;
-        src_port = hdr->L4_header.udp.src_port;
-    }
-    else return;
-    port_t eport_h = ntohs(eport_n);
+    auto val_map_it = val_map.find({metadata.map.id.dst_addr, metadata.map.id.dst_port});
+    if(val_map_it == val_map.end()) return;// no such WAN addr & port
 
-    if(eport_h < PORT_MIN || eport_h > PORT_MAX) return;
-
-    list_entry_t *entry = port_host_to_entry(eport_h);
+    flow_entry_t *entry = val_map_it->second;
     if(entry->type != list_type::inuse) return;
 
 // match
-    flow_id_t &flow_id = entry->id;
-    if(flow_id.dst_addr != src_addr || flow_id.dst_port != src_port 
-        || flow_id.protocol != hdr->ip.protocol)
+    if(entry->map.id.dst_addr != metadata.map.id.src_addr || 
+        entry->map.id.dst_port != metadata.map.id.src_port ||
+        entry->map.id.protocol != metadata.map.id.protocol)
         return; // drop on mismatch
 
     /*
@@ -620,29 +411,52 @@ void backward_process(mytime_t timestamp, len_t packet_len, hdr_t * const hdr)
     
 // refresh flow's timestamp
     entry->timestamp_host = timestamp;
-    list_move_to_back(inuse_port_leader, entry);
+    list_move_to_back(&inuse_head, entry);
 
 // heavy hitter detect
-    port_t index = entry->index_host;
-    heavy_hitter_count(index, entry_to_port_host(entry));
+    if(entry->id_index_host == entry->val_index_host) {
+        // it is not a borrowed entry
+        heavy_hitter_count(entry->val_index_host, entry);
+    }
+    
 
-// tranlate
-    checksum_t delta = 0;// host
-    delta = add(delta, sub(ntohs(flow_id.src_addr & 0xffff), ntohs(hdr->ip.dst_addr & 0xffff)));
-    delta = add(delta, sub(ntohs(flow_id.src_addr >> 16), ntohs(hdr->ip.dst_addr >> 16)));
-    hdr->ip.dst_addr = flow_id.src_addr;
-    hdr->ip.checksum = htons(make_zero_negative(sub(ntohs(hdr->ip.checksum), delta)));
+// translate
+    net_checksum_calculator sum;
+
+    sum.sub(&hdr->ip.dst_addr, 4);
+    hdr->ip.dst_addr = entry->map.id.src_addr;
+    sum.add(&hdr->ip.dst_addr, 4);
+
+    hdr->ip.checksum = sum.checksum(hdr->ip.checksum);
     if(is_tcp) {
-        delta = add(delta, sub(ntohs(flow_id.src_port), ntohs(hdr->L4_header.tcp.dst_port)));
-        hdr->L4_header.tcp.dst_port = flow_id.src_port;
-        hdr->L4_header.tcp.checksum = htons(make_zero_negative(sub(ntohs(hdr->L4_header.tcp.checksum), delta)));
+        sum.sub(hdr->L4_header.tcp.dst_port);
+        hdr->L4_header.tcp.dst_port = entry->map.id.src_port;
+        sum.add(hdr->L4_header.tcp.dst_port);
+
+        hdr->L4_header.tcp.checksum = sum.checksum(hdr->L4_header.tcp.checksum);
     }
     else {
-        delta = add(delta, sub(ntohs(flow_id.src_port), ntohs(hdr->L4_header.udp.dst_port)));
-        hdr->L4_header.udp.dst_port = flow_id.src_port;
+        sum.sub(hdr->L4_header.udp.dst_port);
+        hdr->L4_header.udp.dst_port = entry->map.id.src_port;
+        sum.add(hdr->L4_header.udp.dst_port);
+
         if(hdr->L4_header.udp.checksum != 0)
-            hdr->L4_header.udp.checksum = htons(make_zero_negative(sub(ntohs(hdr->L4_header.udp.checksum), delta)));
+            hdr->L4_header.udp.checksum = sum.checksum(hdr->L4_header.udp.dst_port);
     }
+
+// try add update
+    if(metadata.update) {//
+        try_add_update(entry->id_index_host, metadata, timestamp);
+    }
+
+// reset "update" & "type"
+    net_checksum_calculator metadata_sum;
+    metadata_sum.sub(*(checksum_t*)&metadata.version);// "version" is beside "update" & "type"
+    metadata.update = 0;
+    metadata.type = 3;
+    metadata_sum.add(*(checksum_t*)&metadata.version);
+
+    metadata.checksum = metadata_sum.checksum(metadata.checksum);
 
 #ifdef NAT_TEST
     if(is_tcp) swap(*(checksum_t*)(hdr->L4_header.tcp.payload + 4), *(checksum_t*)(hdr->L4_header.tcp.payload + 6));
@@ -653,18 +467,12 @@ void backward_process(mytime_t timestamp, len_t packet_len, hdr_t * const hdr)
     send_back(hdr, packet_len);
 }
 
-void ack_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
+void ack_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
 {
-    //debug_printf("receive ACK\n");
-    // only hdr.ethernet & hdr.metadata is valid
-    assert(hdr->metadata.is_update);
-    
-    //if(timestamp - ntohl(hdr->metadata.nf_time_net) > AGING_TIME_US / 2) return;
-    // this is no longer needed, since we use "switch_time"
+    nat_metadata_t &metadata = hdr->metadata;
 
-    debug_printf("1\n");
-    port_t index = ntohs(hdr->metadata.index);
-    if(index >= SWITCH_PORT_NUM) return; // if checksum is right, this could not happen
+    flow_num_t index = metadata.index;
+
     debug_printf("2\n");
     wait_entry_t *wait_entry = &wait_set[index];
     if(!wait_entry -> is_waiting) return; // Redundant ACK
@@ -672,15 +480,12 @@ void ack_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
     // mismatch
     if(/*memcmp(&wait_entry->map.id, &hdr->metadata.id, sizeof(hdr->metadata.id)) != 0 ||
         wait_entry->map.eport != hdr->metadata.switch_port ||*/
-        wait_entry->version != hdr->metadata.version) 
+        wait_entry->version != metadata.version) 
         return;
     debug_printf("4\n");
 
-    list_entry_t *entry_sw = NULL;
-    if(wait_entry->switch_port != 0) {
-        entry_sw = port_host_to_entry(ntohs(wait_entry->switch_port));
-    }
-    list_entry_t *entry_nf = port_host_to_entry(ntohs(wait_entry->map.eport));
+    flow_entry_t *entry_sw = wait_entry->old_flow;
+    flow_entry_t *entry_nf = wait_entry->new_flow;
 
     if(entry_sw != NULL) {
         assert(entry_sw->type == list_type::sw);
@@ -696,33 +501,33 @@ void ack_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
 
     list_erase(wait_entry);
 
-    if(! hdr->metadata.is_reject) {
+    if(metadata.update) {// "update" means accept
         if(entry_sw != NULL) {
             entry_sw->type = list_type::avail;
         }
         entry_nf->type = list_type::sw;
 
         if(entry_sw != NULL) {
-            list_move_to_back(avail_port_leader, entry_sw);// sw->avail
+            list_move_to_back(&avail_head[entry_sw->val_index_host], entry_sw);// sw->avail
         }
-        list_move_to_back(sw_port_leader, entry_nf);// inuse->sw
+        list_move_to_back(&sw_head, entry_nf);// inuse->sw
 
-        // bug fixed: we should erase entry in map
-        auto erase_res = map.erase(entry_nf->id);
+        auto erase_res = id_map.erase(entry_nf->map.id);
         assert(erase_res == 1); 
     }
 
     debug_printf("\nreceive ACK (%s)\n", hdr->metadata.is_reject? "reject": "accept");
-    debug_printf("old switch port: %d\n", wait_set[index].switch_port);
-    debug_printf("new map: ");
-    print_map(wait_set[index].map.id, ntohs(wait_set[index].map.eport), index);
-    debug_printf("version %u -> %u\n", wait_set[index].version - 1, wait_set[index].version);
+    debug_printf("old map:\n");
+    print_map((flow_id_t){0,0,0,0,0,0}, wait_set[index].old_flow->map.val, index);
+    debug_printf("new map:\n");
+    print_map(wait_set[index].new_flow->map.id, wait_set[index].new_flow->map.val, index);
+    debug_printf("version %u -> %u\n", wait_entry->version - 1, wait_entry->version);
 }
 
-void do_aging(mytime_t timestamp)
+void do_aging(host_time_t timestamp)
 {
-    for(list_entry_t *entry = inuse_port_leader->r, *nxt; 
-        entry != inuse_port_leader; entry = nxt) {
+    for(flow_entry_t *entry = inuse_head.r, *nxt; 
+        entry != &inuse_head; entry = nxt) {
         
         nxt = entry->r;// must first calculate address nxt, or SGfault may happen 
 
@@ -732,25 +537,22 @@ void do_aging(mytime_t timestamp)
 
         assert(entry->type == list_type::inuse);
 
-        list_move_to_back(avail_port_leader, entry);
+        list_move_to_back(&avail_head[entry->val_index_host], entry);
         entry->type = list_type::avail;
-        auto erase_res = map.erase(entry->id);
+        auto erase_res = id_map.erase(entry->map.id);
         assert(erase_res == 1); 
     }
     // for debug
-    static mytime_t last_timestamp = 0;
+    static host_time_t last_timestamp = 0;
     if(timestamp - last_timestamp < 200000) return;
     last_timestamp = timestamp;    
 
 
     debug_printf("\n");
-    list_entry_t *entry = list_front(inuse_port_leader);
+    flow_entry_t *entry = list_front(&inuse_head);
     int cnt = 0;
-    while(entry != inuse_port_leader) {
-        flow_id_t id = entry->id;
-        port_t index = entry->index_host;
-        port_t eport = entry_to_port_host(entry);
-        print_map(id, eport, index);
+    while(entry != &inuse_head) {
+        print_map(entry->map.id, entry->map.val, entry->id_index_host);
         cnt++;
         entry = entry->r;
     }
@@ -763,11 +565,11 @@ void report_wait_time_too_long()
     exit(0);
 }
 
-void update_wait_set(mytime_t timestamp)
+void update_wait_set(host_time_t timestamp)
 {
-    while(!list_empty(wait_set_leader))
+    while(!list_empty(&wait_set_head))
     {
-        wait_entry_t *entry = list_front(wait_set_leader);
+        wait_entry_t *entry = list_front(&wait_set_head);
         if(timestamp - entry->last_req_time_host <= WAIT_TIME_US) break;
 
         // this is no longer needed, but we still use it to prevent the worst case
@@ -777,34 +579,39 @@ void update_wait_set(mytime_t timestamp)
 
         entry->last_req_time_host = timestamp;
 
-        port_t index = (port_t)(entry - wait_set);
-        send_update(index);
-        list_move_to_back(wait_set_leader, entry);
+        send_update(entry->new_flow->id_index_host, 0);// == (entry - &wait_set_head)
+        list_move_to_back(&wait_set_head, entry);
     }
 }
 
-void nat_process(mytime_t timestamp, len_t packet_len, hdr_t * hdr)
+void nat_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
 {
     do_aging(timestamp);
-    /*if(memcmp(hdr->ethernet.src_addr, SWITCH_INNER_MAC, sizeof(hdr->ethernet.src_addr)) != 0 ||
-        memcmp(hdr->ethernet.dst_addr, NF_INNER_MAC, sizeof(hdr->ethernet.dst_addr)) != 0)
+
+    if(packet_len < PACKET_WITH_META_LEN) 
         return;
-    // I don't want to check MAC address
-    */
+        
     if(hdr->ethernet.ether_type != htons(TYPE_METADATA)) 
         return;
-
-    if(packet_len < sizeof(ethernet_t) + sizeof(nat_metadata_t)) 
-        return;
+    
     // only check checksum of header update
-    if(compute_checksum(hdr->metadata) != 0) return;
+    net_checksum_calculator sum;
+    sum.add(&hdr->metadata, sizeof(hdr->metadata));
+    if(!sum.correct()) return;
 
-    if(hdr->metadata.is_update && !hdr->metadata.is_to_in && !hdr->metadata.is_to_out)
+    if(hdr->metadata.type == 6)
         ack_process(timestamp, packet_len, hdr);
-    else if(hdr->metadata.is_to_out && !hdr->metadata.is_to_in) 
+    else if(hdr->metadata.type == 4) 
         forward_process(timestamp, packet_len, hdr);
-    else if(hdr->metadata.is_to_in && !hdr->metadata.is_to_out && !hdr->metadata.is_update) 
+    else if(hdr->metadata.type == 5) 
         backward_process(timestamp, packet_len, (hdr_t *) hdr);
+}
+
+host_time_t get_mytime()
+{
+    timespec tm;
+    clock_gettime(CLOCK_MONOTONIC, &tm); // don't use pcap's clock
+    return (host_time_t)(tm.tv_sec*1000000ull+tm.tv_nsec/1000);
 }
 
 void pcap_handle(u_char *user, const struct pcap_pkthdr *h, const u_char *bytes)
@@ -813,13 +620,9 @@ void pcap_handle(u_char *user, const struct pcap_pkthdr *h, const u_char *bytes)
     //h->caplen
     //h->len
     if(h->caplen != h->len) return;
-    if(h->len < sizeof(ethernet_t)) return;
     memcpy(buf, bytes, h->len);
 
-    timespec tm;
-    clock_gettime(CLOCK_MONOTONIC, &tm); // don't use pcap's clock
-
-    nat_process(tm.tv_sec * 1000000ull + tm.tv_nsec / 1000, h->len, (hdr_t*)buf);
+    nat_process(get_mytime(), h->len, (hdr_t*)buf);
 }
 
 int main(int argc, char **argv)
@@ -831,7 +634,7 @@ int main(int argc, char **argv)
     }
     char *dev_name = argv[1];
     char errbuf[PCAP_ERRBUF_SIZE]; 
-    device = pcap_open_live(dev_name, max_frame_size, 1, 1, errbuf);
+    device = pcap_open_live(dev_name, MAX_FRAME_SIZE, 1, 1, errbuf);
     
     if(device == NULL) {
         printf("cannot open device\n");
@@ -848,10 +651,8 @@ int main(int argc, char **argv)
     while(1) {
         pcap_dispatch(device, 4, pcap_handle, NULL);// process at most 4 packets
 
-        timespec tm;
-        clock_gettime(CLOCK_MONOTONIC, &tm);
-
-        update_wait_set(tm.tv_sec * 1000000ull + tm.tv_nsec / 1000);
+        update_wait_set(get_mytime());
     }
+    
     return 0;
 }
