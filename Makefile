@@ -33,3 +33,7 @@ run: switch
 .PHONY: kill
 kill:
 	./kill.sh nat
+
+.PHONY: clean
+clean:
+	rm -r ./build

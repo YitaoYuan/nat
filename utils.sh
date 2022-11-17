@@ -25,7 +25,7 @@ echo_r() {
     eval $1
 }
 echo_i() {
-    echo_line $color_skyblue "i" "$1"
+    echo_line $color_white "i" "$1"
 }
 echo_w() {
     echo_line $color_yellow "?" "$1"

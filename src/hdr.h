@@ -41,9 +41,9 @@ struct nat_metadata_t{
     version_t   version;
     u8          update : 4;
     u8          type   : 4;
-    checksum_t  checksum;
-    flow_num_t  index;
     switch_time_t    switch_time;
+    flow_num_t  index;
+    checksum_t  checksum;
 }__attribute__ ((__packed__));
 
 struct ip_t{

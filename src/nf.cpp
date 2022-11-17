@@ -14,10 +14,10 @@
 #include "type.h"
 #include "hdr.h"
 
-#include "hash.cpp"
-#include "list.cpp"
-#include "checksum.cpp"
-#include "heavy_hitter.cpp"
+#include "hash.hpp"
+#include "list.hpp"
+#include "checksum.hpp"
+#include "heavy_hitter.hpp"
 
 #ifdef DEBUG
 #define debug_printf(...) fprintf(stderr, __VA_ARGS__)
@@ -34,6 +34,9 @@ using std::swap;
 /*
  * All these constants are in host's byte order
  */
+const ip_addr_t WAN_ADDR_BASE = SHARED_WAN_ADDR_BASE;
+const port_t MIN_PORT = SHARED_MIN_PORT;
+
 const flow_num_t SWITCH_FLOW_NUM = SHARED_SWITCH_FLOW_NUM;
 const flow_num_t TOTAL_FLOW_NUM = SHARED_TOTAL_FLOW_NUM;
 
@@ -185,23 +188,30 @@ void nf_init()
         avail_head[i].l = avail_head[i].r = &avail_head[i];
     }
 
-    ip_addr_t wan_addr_base = 0xC0A802FE;
-    port_t port_min = (1<<15);
-    flow_num_t port_num_per_addr = (1<<16) - port_min;
+    ip_addr_t wan_addr_base = WAN_ADDR_BASE;
+    port_t min_port = MIN_PORT;
+    flow_num_t port_num_per_addr = (1<<16) - min_port;
+    
+    assert(TOTAL_FLOW_NUM / port_num_per_addr < 128);
 
     for(flow_num_t i = 0; i < TOTAL_FLOW_NUM; i++) {// BUG fixed !! don't use "port <= PORT_MAX"
         ip_addr_t addr_offset = i / port_num_per_addr;
         ip_addr_t wan_addr = wan_addr_base - addr_offset;
-        port_t wan_port = port_min + i % port_num_per_addr;
+        port_t wan_port = min_port + i % port_num_per_addr;
 
         flow_entry_t &entry = flow_entry[i];
         entry.map.val = {htonl(wan_addr), htons(wan_port)};
         entry.val_index_host = get_index(entry.map.val);
-        entry.type = list_type::avail;
         entry.is_waiting = 0;
-        
-        list_insert_before(&avail_head[entry.val_index_host], &entry);
 
+        if(i < SWITCH_FLOW_NUM) {
+            entry.type = list_type::sw;
+            list_insert_before(&sw_head, &entry);
+        }
+        else {
+            entry.type = list_type::avail;
+            list_insert_before(&avail_head[entry.val_index_host], &entry);
+        }
         val_map.insert(make_pair(entry.map.val, &entry));
     }
 

@@ -1,3 +1,7 @@
 #!/bin/bash
+
+DIR=$(dirname $0)
+. $DIR/utils.sh
+
 IF=ens10f1
-sudo tcpdump -e -n -X -vv -i $IF
+echo_r "sudo tcpdump -e -n -X -vv -i $IF"
