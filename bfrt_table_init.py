@@ -34,12 +34,18 @@ except:
 try:
     # smaller value means higher priority
     for i in range(worker_num):
-        bfrt.nat.pipe.Ingress.send_out.forward_table.add_with_set_egress_port(0, 0xC, 1, 0x1, 0, 0x1, 0, 0x0, worker_ip[i], 0xffffffff, 1, worker_port[i])
-        bfrt.nat.pipe.Ingress.send_out.forward_table.add_with_set_egress_port(8, 0xF, 0, 0x0, 0, 0x0, worker_mac[i], 0xffffffffffff, 0, 0x0, 2, worker_port[i])
-    bfrt.nat.pipe.Ingress.send_out.forward_table.add_with_drop(7, 0xF, 0, 0x0, 0, 0x0, 0, 0x0, 0, 0x0, 3)
+        if worker_type[i] == 1: # to WAN, transition_type == 0/2
+            bfrt.nat.pipe.Ingress.send_out.forward_table.add_with_set_egress_port(0, 0xD, 1, 0x1, 0, 0x1, 0, 0x0, worker_ip[i], 0xffffffff, 0, 0x0, 1, worker_port[i])
+        if worker_type[i] == 0: # to LAN, transition_type == 1/3
+            bfrt.nat.pipe.Ingress.send_out.forward_table.add_with_set_egress_port(1, 0xD, 1, 0x1, 0, 0x1, 0, 0x0, 0, 0x0, worker_ip[i], 0xffffffff, 1, worker_port[i])
+        # transition_type == 8
+        bfrt.nat.pipe.Ingress.send_out.forward_table.add_with_set_egress_port(8, 0xF, 0, 0x0, 0, 0x0, worker_mac[i], 0xffffffffffff, 0, 0x0, 0, 0x0, 1, worker_port[i])
+    # transition_type == 7
+    bfrt.nat.pipe.Ingress.send_out.forward_table.add_with_drop(7, 0xF, 0, 0x0, 0, 0x0, 0, 0x0, 0, 0x0, 0, 0x0, 1)
+    # transition_type == 0/1/6 (0,1 is mismatch)
     for i in range(worker_num):
         if worker_type[i] == 2:
-            bfrt.nat.pipe.Ingress.send_out.forward_table.add_with_set_egress_port(0, 0x0, 0, 0x0, 0, 0x0, 0, 0x0, 0, 0x0, 4, worker_port[i])
+            bfrt.nat.pipe.Ingress.send_out.forward_table.add_with_set_egress_port(0, 0x0, 0, 0x0, 0, 0x0, 0, 0x0, 0, 0x0, 0, 0x0, 4, worker_port[i])
 except:
     print("Cannot load forward_table.")
 

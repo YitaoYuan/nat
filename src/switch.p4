@@ -420,6 +420,7 @@ control send_out(
             meta.main_flow_timeout: ternary;
             hdr.ethernet.dst_addr: ternary;
             hdr.metadata.dst_addr: ternary;
+            hdr.metadata.wan_addr: ternary;
         }
         actions = {
             set_egress_port;
