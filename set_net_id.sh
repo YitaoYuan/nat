@@ -27,12 +27,12 @@ if [ "$1" == "LAN" ]
 then 
 	LOCAL_NET_ADDR=$LAN_ADDR
 	REMOTE_NET_ADDR=$WAN_ADDR
-	MAC_TAIL=01:01
+	MAC_TAIL=00:01
 elif [ "$1" == "WAN" ]
 then
 	LOCAL_NET_ADDR=$WAN_ADDR
 	REMOTE_NET_ADDR=$LAN_ADDR
-	MAC_TAIL=02:01
+	MAC_TAIL=01:01
 else
 	echo_e "invalid net specify"
 	exit
@@ -44,9 +44,6 @@ echo_r "sudo ip link set $IF up"
 
 set +e #grep will return 1 on mismatch
 route1=`route | grep -E "$LOCAL_NET_ADDR\.0"`
-route2=`route | grep -E "$REMOTE_NET_ADDR\.0"`
-arp1=`arp | grep -E "$LOCAL_NET_ADDR\.254"`
-arp2=`arp | grep -E "$REMOTE_NET_ADDR\.254"`
 set -e
 
 if [ -n "$route1" ]
@@ -54,28 +51,20 @@ then
     echo_r "sudo route del -net $LOCAL_NET_ADDR.0/24"
 fi
 
-if [ -n "$route2" ]
-then
-    echo_r "sudo route del -net $REMOTE_NET_ADDR.0/24"
-fi
-
-if [ -n "$arp1" ]
-then
-    echo_r "sudo arp -i $IF -d $LOCAL_NET_ADDR.254"
-fi
-
-if [ -n "$arp2" ]
-then
-    echo_r "sudo arp -i $IF -d $REMOTE_NET_ADDR.254"
-fi
-	
 echo_r "sudo route add -net $LOCAL_NET_ADDR.0/24 dev $IF"
-
 
 if [ "$1" == "LAN" ]
 then
     echo_r "sudo route add -net $REMOTE_NET_ADDR.0/24 gw $LOCAL_NET_ADDR.254"
+	echo_r "sudo arp -i $IF -s $LOCAL_NET_ADDR.254 $MAC_PREFIX:$MAC_TAIL"
+else
+	for i in {128..254}
+	do 
+		echo_r "sudo arp -i $IF -s $LOCAL_NET_ADDR.$i $MAC_PREFIX:$MAC_TAIL"
+	done
 fi
 
-echo_r "sudo arp -i $IF -s $LOCAL_NET_ADDR.254 $MAC_PREFIX:$MAC_TAIL"
+
+
+
 

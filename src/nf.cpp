@@ -29,11 +29,14 @@ using std::unordered_map;
 using std::queue;
 using std::make_pair;
 using std::swap;
+using std::max;
+using std::min;
 
 
 /*
  * All these constants are in host's byte order
  */
+
 const ip_addr_t WAN_ADDR_BASE = SHARED_WAN_ADDR_BASE;
 const port_t MIN_PORT = SHARED_MIN_PORT;
 
@@ -179,8 +182,6 @@ void print_map(flow_id_t id, flow_val_t val, flow_num_t index)
 
 void nf_init()
 {       
-    crc_initialize();
-
     inuse_head.l = inuse_head.r = &inuse_head;
     sw_head.l = sw_head.r = &sw_head;
 
@@ -194,6 +195,10 @@ void nf_init()
     
     assert(TOTAL_FLOW_NUM / port_num_per_addr < 128);
 
+    char *charmap = new char[SWITCH_FLOW_NUM];
+    memset(charmap, 0, SWITCH_FLOW_NUM);
+    int preload_num = 0;
+
     for(flow_num_t i = 0; i < TOTAL_FLOW_NUM; i++) {// BUG fixed !! don't use "port <= PORT_MAX"
         ip_addr_t addr_offset = i / port_num_per_addr;
         ip_addr_t wan_addr = wan_addr_base - addr_offset;
@@ -204,7 +209,9 @@ void nf_init()
         entry.val_index_host = get_index(entry.map.val);
         entry.is_waiting = 0;
 
-        if(i < SWITCH_FLOW_NUM) {
+        if(!charmap[entry.val_index_host]) {
+            preload_num ++;
+
             entry.type = list_type::sw;
             list_insert_before(&sw_head, &entry);
         }
@@ -212,8 +219,22 @@ void nf_init()
             entry.type = list_type::avail;
             list_insert_before(&avail_head[entry.val_index_host], &entry);
         }
+        charmap[entry.val_index_host]++;
+
         val_map.insert(make_pair(entry.map.val, &entry));
     }
+    
+    char max_bucket_size = 0, min_bucket_size = 127;
+    for(flow_num_t i = 0; i < SWITCH_FLOW_NUM; i++) {
+        max_bucket_size = max(max_bucket_size, charmap[i]);
+        min_bucket_size = min(min_bucket_size, charmap[i]);
+    }
+    printf("max_bucket_size: %d\nmin_bucket_size: %d\nnumber of pre-load entries: %d(%d%%)\n", 
+        max_bucket_size, min_bucket_size, preload_num, preload_num*100/SWITCH_FLOW_NUM);
+    if(min_bucket_size * 2 < max_bucket_size) {
+        printf("WARNING: Your data's distribution is too uneven.\n");
+    }
+    delete [] charmap;
 
     wait_set_head.l = wait_set_head.r = &wait_set_head;
 
@@ -308,7 +329,12 @@ void forward_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
     // things in map are in network byte order
     auto id_map_it = id_map.find(metadata.map.id);
     if(id_map_it == id_map.end()) {// a new flow
-        flow_num_t id_index_host = get_index(metadata.map.id);
+        flow_num_t id_index_host;
+#ifdef ONE_ENTRY_TEST
+        id_index_host = 1;
+#else
+        id_index_host = get_index(metadata.map.id);
+#endif
         assert(id_index_host == ntohl(metadata.index));
 
         flow_num_t index_select = id_index_host;
@@ -382,9 +408,13 @@ void forward_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
     metadata.type = 2;
     metadata_sum.add(*(checksum_t*)&metadata.version);
 
+    metadata_sum.sub(&metadata.map.val, sizeof(metadata.map.val));
+    metadata.map.val = entry->map.val;
+    metadata_sum.add(&metadata.map.val, sizeof(metadata.map.val));
+
     metadata.checksum = metadata_sum.checksum(metadata.checksum);
 
-#ifdef NAT_TEST
+#ifdef PATH_TEST
     // this does not change checksum
     if(is_tcp) swap(*(checksum_t*)(hdr->L4_header.tcp.payload), *(checksum_t*)(hdr->L4_header.tcp.payload + 2));
     else swap(*(checksum_t*)(hdr->L4_header.udp.payload), *(checksum_t*)(hdr->L4_header.udp.payload + 2));
@@ -433,9 +463,9 @@ void backward_process(host_time_t timestamp, len_t packet_len, hdr_t * const hdr
 // translate
     net_checksum_calculator sum;
 
-    sum.sub(&hdr->ip.dst_addr, 4);
+    sum.sub(&hdr->ip.dst_addr, sizeof(hdr->ip.dst_addr));
     hdr->ip.dst_addr = entry->map.id.src_addr;
-    sum.add(&hdr->ip.dst_addr, 4);
+    sum.add(&hdr->ip.dst_addr, sizeof(hdr->ip.dst_addr));
 
     hdr->ip.checksum = sum.checksum(hdr->ip.checksum);
     if(is_tcp) {
@@ -451,7 +481,7 @@ void backward_process(host_time_t timestamp, len_t packet_len, hdr_t * const hdr
         sum.add(hdr->L4_header.udp.dst_port);
 
         if(hdr->L4_header.udp.checksum != 0)
-            hdr->L4_header.udp.checksum = sum.checksum(hdr->L4_header.udp.dst_port);
+            hdr->L4_header.udp.checksum = sum.checksum(hdr->L4_header.udp.checksum);
     }
 
 // try add update
@@ -466,9 +496,13 @@ void backward_process(host_time_t timestamp, len_t packet_len, hdr_t * const hdr
     metadata.type = 3;
     metadata_sum.add(*(checksum_t*)&metadata.version);
 
+    metadata_sum.sub(&metadata.map, sizeof(metadata.map));
+    metadata.map = entry->map;
+    metadata_sum.add(&metadata.map, sizeof(metadata.map));
+
     metadata.checksum = metadata_sum.checksum(metadata.checksum);
 
-#ifdef NAT_TEST
+#ifdef PATH_TEST
     if(is_tcp) swap(*(checksum_t*)(hdr->L4_header.tcp.payload + 4), *(checksum_t*)(hdr->L4_header.tcp.payload + 6));
     else swap(*(checksum_t*)(hdr->L4_header.udp.payload + 4), *(checksum_t*)(hdr->L4_header.udp.payload + 6));
 #endif
@@ -481,7 +515,7 @@ void ack_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
 {
     nat_metadata_t &metadata = hdr->metadata;
 
-    flow_num_t index = metadata.index;
+    flow_num_t index = ntohl(metadata.index);
 
     debug_printf("2\n");
     wait_entry_t *wait_entry = &wait_set[index];

@@ -4,4 +4,4 @@ DIR=$(dirname $0)
 . $DIR/utils.sh
 
 IF=ens10f1
-echo_r "sudo tcpdump -e -n -X -vv -i $IF"
+echo_r "sudo tcpdump -e -n -X -vv -i $IF $1 not arp and not icmp "

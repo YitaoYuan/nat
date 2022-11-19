@@ -420,7 +420,7 @@ control send_out(
             meta.main_flow_timeout: ternary;
             hdr.ethernet.dst_addr: ternary;
             hdr.metadata.dst_addr: ternary;
-            hdr.metadata.wan_addr: ternary;
+            hdr.metadata.src_addr: ternary;
         }
         actions = {
             set_egress_port;
@@ -431,6 +431,7 @@ control send_out(
     }
 
     apply {
+        //注意，此时type 0/1还没有变成4/5
         forward_table.apply();
 
         hdr.metadata.type_and_update = meta.transition_type ++ 4w0;
@@ -781,7 +782,7 @@ control Ingress(
         if(meta.ingress_end == false) {
             ipv4_flow_id_t id = meta.id;
             if(meta.transition_type == 0) {
-#ifdef NAT_TEST
+#ifdef ONE_ENTRY_TEST
                 hdr.metadata.index = 1;
 #else 
                 hdr.metadata.index[SHARED_SWITCH_FLOW_NUM_LOG-1:0] = hashmap0.get({id.src_addr, id.dst_addr, id.src_port, id.dst_port, id.protocol, id.zero});
@@ -1042,6 +1043,23 @@ control Egress(
         in egress_intrinsic_metadata_from_parser_t eg_intr_prsr_md,
         inout egress_intrinsic_metadata_for_deparser_t ig_intr_dprs_md,
         inout egress_intrinsic_metadata_for_output_port_t eg_intr_oport_md) {
+
+    action set_mac(mac_addr_t src_addr, mac_addr_t dst_addr) {
+        hdr.ethernet.src_addr = src_addr;
+        hdr.ethernet.dst_addr = dst_addr;
+    }
+
+    table mac_table {
+        key = {
+            meta.transition_type: ternary;
+            hdr.ipv4.dst_addr: ternary;
+        }
+        actions = {
+            set_mac;
+        }
+        size = 64;
+    }
+
     apply { 
         /*if(eg_intr_prsr_md.parser_err != PARSER_ERROR_OK) {
             hdr.ethernet.src_addr[7:0] = 0;
@@ -1058,9 +1076,6 @@ control Egress(
 
 
         if((meta.transition_type & 0b1100) == 0) {//0, 1, 2, 3
-            hdr.metadata.setInvalid();
-            hdr.ethernet.ether_type = TYPE_IPV4;
-
             if(meta.transition_type == 0) {
                 hdr.ipv4.src_addr = hdr.metadata.wan_addr;
                 if(meta.is_tcp)
@@ -1073,8 +1088,11 @@ control Egress(
                 if(meta.is_tcp)
                     hdr.tcp.dst_port = hdr.metadata.src_port;
                 else 
-                    hdr.udp.src_port = hdr.metadata.src_port;
+                    hdr.udp.dst_port = hdr.metadata.src_port;
             }
+
+            hdr.metadata.setInvalid();
+            hdr.ethernet.ether_type = TYPE_IPV4;
         }
         else if((meta.transition_type & 0b1110) == 4) {// 4, 5
             hdr.metadata.src_addr = hdr.ipv4.src_addr;
@@ -1090,6 +1108,7 @@ control Egress(
                 hdr.metadata.dst_port = hdr.udp.dst_port;
             }
         }
+        mac_table.apply();
     }
 }
 

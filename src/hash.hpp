@@ -20,6 +20,11 @@ void crc_initialize()
         crc_value[i] = crc32_bit(i);
 }
 
+struct crc_initializer {
+    crc_initializer() {
+        crc_initialize();
+    }
+}initializer;
 /*
  *  input: bit stream, do not reverse bit 
  *  output: CRC value, in host's byte order

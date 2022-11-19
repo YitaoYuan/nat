@@ -44,11 +44,11 @@ public:
     void add(void *net_data, size_t len_in_byte) {
         assert(len_in_byte % 2 == 0);
         for(checksum_t *i = (checksum_t *)net_data; i < (checksum_t *)(len_in_byte + (u8*)net_data); i++) 
-            add(ntohs(*i));
+            add(*i);
     }
     void sub(void *net_data, size_t len_in_byte) {
         assert(len_in_byte % 2 == 0);
         for(checksum_t *i = (checksum_t *)net_data; i < (checksum_t *)(len_in_byte + (u8*)net_data); i++) 
-            sub(ntohs(*i));
+            sub(*i);
     }
 };
