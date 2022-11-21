@@ -29,7 +29,7 @@
 
 //#define DEBUG 
 
-#define ONE_ENTRY_TEST
+//#define ONE_ENTRY_TEST
 //#define PATH_TEST
 
 /* THE VALUE BELOW IS ONLY NEEDED BY nf.cpp */
