@@ -21,8 +21,19 @@ while True:
     msg=input('>>: ').strip()
     if not msg:continue
 
-    client.sendto(msg.encode('utf-8'), dst)
-
-    back_msg,addr=client.recvfrom(1024)
-    print(back_msg.decode('utf-8'), addr)
+    client.settimeout(1)
+    cnt = 0
+    while cnt < 2:
+        try:
+            client.sendto(msg.encode('utf-8'), dst)
+            cnt = cnt + 1
+            back_msg,addr=client.recvfrom(1024)
+            print(back_msg.decode('utf-8'), addr)
+            break
+        except socket.timeout:
+            pass
+        except:
+            sys.exit(0)
+    
+    
 

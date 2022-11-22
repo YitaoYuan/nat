@@ -93,8 +93,8 @@ def crc32(data, len_in_byte):
 wan_addr_base = 0xC0A802FE
 min_port = 30000
 total_flow_num = 1 << 21
-switch_flow_num = 1 << 17
-switch_flow_num_per_reg = 1 << 16
+switch_flow_num = 1 << 16
+switch_flow_num_per_reg = 1 << 15
 port_num_per_addr = (1 << 16) - min_port
 
 # 不仅python需要改，nf.cpp也需要改初始化的过程。
