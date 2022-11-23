@@ -78,7 +78,7 @@ struct flow_entry_t{
 struct wait_entry_t{
     flow_entry_t *new_flow;
     flow_entry_t *old_flow;// we don't care old_flow->id
-    version_t version;// net (u8 is the same)
+    version_t old_version;// net (u8 is the same)
     switch_time_t switch_time;// net
     host_time_t first_req_time_host;
     host_time_t last_req_time_host;// host
@@ -250,16 +250,19 @@ void send_back(hdr_t * hdr, size_t len)
     pcap_sendpacket(device, (u_char *)hdr, len);
 }
 
-void send_update(flow_num_t index, bool force_update)
+void send_update(flow_num_t index)
 {
     hdr_t *hdr = (hdr_t *)metadata_buf;
     // MAC address is useless between nf & switch
 
     hdr->metadata.map = wait_set[index].new_flow->map;
-    hdr->metadata.version = wait_set[index].version;
+    hdr->metadata.old_version = wait_set[index].old_version;
+    hdr->metadata.new_version = (hdr->metadata.old_version & 0xf0) | ((hdr->metadata.old_version + 1) & 0x0f);
 
-    hdr->metadata.update = force_update;
+    hdr->metadata.update = 0;
     hdr->metadata.type = 6;
+
+    hdr->metadata.zero2 = 0;
 
     hdr->metadata.index = htonl(index);
 
@@ -283,7 +286,7 @@ void send_update(flow_num_t index, bool force_update)
     debug_printf("new map:\n");
     print_map(wait_set[index].new_flow->map.id, wait_set[index].new_flow->map.val, index);
     
-    debug_printf("version %u -> %u\n", wait_set[index].version - 1, wait_set[index].version);
+    debug_printf("version %x -> %x\n", hdr->metadata.old_version, hdr->metadata.new_version);
 }
 
 void try_add_update(flow_num_t wait_set_index, nat_metadata_t &metadata, host_time_t timestamp)
@@ -303,7 +306,7 @@ void try_add_update(flow_num_t wait_set_index, nat_metadata_t &metadata, host_ti
         flow_entry_t *old_entry = val_map_it->second;
         assert(old_entry->type == list_type::sw);
 
-        wait_set[wait_set_index] = {new_entry, old_entry, (u8)(metadata.version + 1), 
+        wait_set[wait_set_index] = {new_entry, old_entry, metadata.old_version, 
                                     metadata.switch_time, timestamp, timestamp, 
                                     true, NULL, NULL};
             
@@ -311,7 +314,7 @@ void try_add_update(flow_num_t wait_set_index, nat_metadata_t &metadata, host_ti
         new_entry->is_waiting = 1;// locked, it will not be moved to list "avail" immediately
 
         list_insert_before(&wait_set_head, &wait_set[wait_set_index]);// == push_back
-        send_update(wait_set_index, 0);
+        send_update(wait_set_index);
     }
 }
 
@@ -346,7 +349,10 @@ void forward_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
             index_select = (flow_num_t)(rand() ^ (rand() << 16)) % SWITCH_FLOW_NUM;
         }
 
-        if(list_empty(&avail_head[index_select])) return;// too full to allocate, drop
+        if(list_empty(&avail_head[index_select])) {
+            fprintf(stderr, "Warning: Too full to allocate an entry for a new flow.\n");
+            return;// too full to allocate, drop
+        }
 
         flow_entry_t *entry = list_front(&avail_head[index_select]);
         
@@ -397,16 +403,17 @@ void forward_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
     }
 
 // try add update
-    if(metadata.update) {//
+    if(metadata.update) {
+        // 正向流访问的switch的第id_index个表项
         try_add_update(entry->id_index_host, metadata, timestamp);
     }
 
 // reset "update" & "type"
     net_checksum_calculator metadata_sum;
-    metadata_sum.sub(*(checksum_t*)&metadata.version);// "version" is beside "update" & "type"
+    metadata_sum.sub(*(checksum_t*)(&metadata.zero2-1));// "version" is beside "update" & "type"
     metadata.update = 0;
     metadata.type = 2;
-    metadata_sum.add(*(checksum_t*)&metadata.version);
+    metadata_sum.add(*(checksum_t*)(&metadata.zero2-1));
 
     metadata_sum.sub(&metadata.map.val, sizeof(metadata.map.val));
     metadata.map.val = entry->map.val;
@@ -485,16 +492,17 @@ void backward_process(host_time_t timestamp, len_t packet_len, hdr_t * const hdr
     }
 
 // try add update
-    if(metadata.update) {//
-        try_add_update(entry->id_index_host, metadata, timestamp);
+    if(metadata.update) {
+        // 反向流访问的switch的第val_index个表项
+        try_add_update(entry->val_index_host, metadata, timestamp);
     }
 
 // reset "update" & "type"
     net_checksum_calculator metadata_sum;
-    metadata_sum.sub(*(checksum_t*)&metadata.version);// "version" is beside "update" & "type"
+    metadata_sum.sub(*(checksum_t*)(&metadata.zero2-1));// "version" is beside "update" & "type"
     metadata.update = 0;
     metadata.type = 3;
-    metadata_sum.add(*(checksum_t*)&metadata.version);
+    metadata_sum.add(*(checksum_t*)(&metadata.zero2-1));
 
     metadata_sum.sub(&metadata.map, sizeof(metadata.map));
     metadata.map = entry->map;
@@ -524,7 +532,7 @@ void ack_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
     // mismatch
     if(/*memcmp(&wait_entry->map.id, &hdr->metadata.id, sizeof(hdr->metadata.id)) != 0 ||
         wait_entry->map.eport != hdr->metadata.switch_port ||*/
-        wait_entry->version != metadata.version) 
+        wait_entry->old_version != metadata.old_version) 
         return;
     debug_printf("4\n");
 
@@ -565,7 +573,7 @@ void ack_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
     print_map((flow_id_t){0,0,0,0,0,0}, wait_set[index].old_flow->map.val, index);
     debug_printf("new map:\n");
     print_map(wait_set[index].new_flow->map.id, wait_set[index].new_flow->map.val, index);
-    debug_printf("version %u -> %u\n", wait_entry->version - 1, wait_entry->version);
+    debug_printf("old_version %x\n", wait_entry->old_version);
 }
 
 void do_aging(host_time_t timestamp)
@@ -623,7 +631,7 @@ void update_wait_set(host_time_t timestamp)
 
         entry->last_req_time_host = timestamp;
 
-        send_update(entry->new_flow->id_index_host, 0);// == (entry - &wait_set_head)
+        send_update(entry->new_flow->id_index_host);// == (entry - &wait_set_head)
         list_move_to_back(&wait_set_head, entry);
     }
 }
@@ -641,7 +649,15 @@ void nat_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
     // only check checksum of header update
     net_checksum_calculator sum;
     sum.add(&hdr->metadata, sizeof(hdr->metadata));
-    if(!sum.correct()) return;
+    if(!sum.correct()) {
+        fprintf(stderr, "Warning: Receive a packet with bad checksum, drop.\n");
+        return;
+    }
+    
+    if(hdr->metadata.map.id.zero != 0 || hdr->metadata.zero2 != 0) {
+        fprintf(stderr, "Error: Zero field of packet has non-zero value.\n");
+        return;
+    }
 
     if(hdr->metadata.type == 6)
         ack_process(timestamp, packet_len, hdr);

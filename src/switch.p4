@@ -45,27 +45,28 @@ header ethernet_t {
     bit<16>   ether_type;
 }
 
-header nat_metadata_t {//30
+header nat_metadata_t {//32
     ip4_addr_t  src_addr;
     ip4_addr_t  dst_addr;
     port_t      src_port;
     port_t      dst_port;
     bit<8>      protocol;
-    bit<8>      type_and_update;
+    bit<8>      zero1;
 
     ip4_addr_t  wan_addr;
     port_t      wan_port;
+
     version_t   old_version;
     version_t   new_version;
-
+    bit<8>      type_and_update;
+    bit<8>      zero2;
     // 3 meanings:
     // when type == 0/1, "update" is a hint for server 
     // when type == 6 and the packet is from server, it means if the packet is a force update
     // when type == 6 and the packet is to server, it means if switch accept the update
+    flow_num_t  index; // index is the hash value of flow id
 
     time_t      switch_time;// 因为一个ACK返回的时候wait_entry可能已经没了，所以时间需要记录在packet里
-
-    flow_num_t  index; // index is the hash value of flow id
     
     checksum_t  checksum;
 }
@@ -305,11 +306,11 @@ parser IngressParser(packet_in packet,
         hdr.metadata.src_port = l3l4.src_port;
         hdr.metadata.dst_port = l3l4.dst_port;
         hdr.metadata.protocol = l3l4.protocol;
+        hdr.metadata.zero1 = 0;
 
+        hdr.metadata.zero2 = 0;
         hdr.metadata.index = 0;//这个是为了在pipe内赋hash值时只赋值一部分
-        /*
         hdr.metadata.new_version = 0;
-        */
 
 
         //hdr.metadata.switch_time = ig_intr_md.ingress_mac_tstamp[SHARED_TIME_OFFSET+15:SHARED_TIME_OFFSET];
@@ -805,7 +806,6 @@ control Ingress(
 
         if((meta.transition_type & 0b1110) == 0) {// 0/1
             hdr.metadata.switch_time = meta.time; // This cannot be assigned in parser, so it is assigned here.
-            hdr.metadata.new_version = 0;
         }
 
 
@@ -829,7 +829,7 @@ control Ingress(
             meta.transition_type = 7;
             meta.ingress_end = true;
 
-            // 不要去掉！！！
+            // 不要去掉！！！（似乎现在可以去掉了）
             // 这个赋值不会对程序的逻辑产生任何影响
             // 但是这个赋值会改变编译器的PHV分配方式
             // 如果不加，原先的分配方式似乎存在bug，会导致莫名奇妙的parse_error，加了就没有bug
@@ -914,12 +914,13 @@ control Ingress(
                 //      (______, ______) : end, no response
             }
 
-            // 副流超时时，禁止任何反向流量
-            /*else if(meta.transition_type == 1 && meta.all_flow_timeout == 1) {
+            // 副流超时时，禁止反向包的更新
+            
+            else if(meta.transition_type == 1 && meta.all_flow_timeout == 1) {
                 meta.transition_type = 7;
                 meta.ingress_end = true;
             }
-            */
+            
         }
         
         
@@ -1193,16 +1194,18 @@ control ComputeChecksum(inout headers hdr, in egress_metadata meta) {
                 hdr.metadata.src_port, 
                 hdr.metadata.dst_port, 
                 hdr.metadata.protocol,
-                hdr.metadata.type_and_update,
+                hdr.metadata.zero1,
 
                 hdr.metadata.wan_addr,
                 hdr.metadata.wan_port,
 
                 hdr.metadata.old_version,
                 hdr.metadata.new_version,
+                hdr.metadata.type_and_update,
+                hdr.metadata.zero2,
                 
-                hdr.metadata.switch_time,
-                hdr.metadata.index
+                hdr.metadata.index,
+                hdr.metadata.switch_time
                 }
             );
         }

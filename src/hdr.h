@@ -38,11 +38,13 @@ struct ethernet_t{
 
 struct nat_metadata_t{
     map_entry_t map;
-    version_t   version;
+    version_t   old_version;
+    version_t   new_version;
     u8          update : 4;
     u8          type   : 4;
-    switch_time_t    switch_time;
+    u8          zero2;
     flow_num_t  index;
+    switch_time_t    switch_time;
     checksum_t  checksum;
 }__attribute__ ((__packed__));
 
