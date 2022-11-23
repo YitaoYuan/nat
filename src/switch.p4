@@ -155,6 +155,8 @@ struct ingress_metadata {
     bit<8>          new_type_and_update;
     bit<1>          accept;
 
+    bit<32>         src_dst_port;
+
     index_hi_t      index_hi;
     flow_num_t      index_lo;
 
@@ -452,6 +454,7 @@ control KV(
     Register<bit<32>, flow_num_t>((bit<32>)SWITCH_FLOW_NUM_PER_REG, 0) val1;
     Register<bit<16>, flow_num_t>((bit<32>)SWITCH_FLOW_NUM_PER_REG, 0) val0;
 
+    /*
     RegisterAction<bit<32>, flow_num_t, bit<32>>(key3) reg_key3_read = {
         void apply(inout bit<32> reg, out bit<32> ret) {
             ret = reg;
@@ -561,9 +564,103 @@ control KV(
 
     action val0_write(in flow_num_t index) {
         reg_val0_write.execute(index);
+    }*/
+
+    RegisterAction<bit<32>, flow_num_t, bit<32>>(key3) reg_key3_rw = {
+        void apply(inout bit<32> reg, out bit<32> ret) {
+            if(meta.need_match == 0) {
+                reg = hdr.metadata.src_addr;
+            }
+            ret = reg;
+        }
+    };
+    RegisterAction<bit<32>, flow_num_t, bit<32>>(key2) reg_key2_rw = {
+        void apply(inout bit<32> reg, out bit<32> ret) {
+            if(meta.need_match == 0) {
+                reg = hdr.metadata.dst_addr;
+            }
+            ret = reg;
+        }
+    };
+    RegisterAction<bit<32>, flow_num_t, bit<32>>(key1) reg_key1_rw = {
+        void apply(inout bit<32> reg, out bit<32> ret) {
+            if(meta.need_match == 0) {
+                reg = meta.src_dst_port;
+            }
+            ret = reg;
+        }
+    };
+    RegisterAction<bit<8>, flow_num_t, bit<8>>(key0) reg_key0_rw = {
+        void apply(inout bit<8> reg, out bit<8> ret) {
+            if(meta.need_match == 0) {
+                reg = hdr.metadata.protocol;
+            }
+            ret = reg;
+        }
+    };
+    RegisterAction<bit<32>, flow_num_t, bit<32>>(val1) reg_val1_rw = {
+        void apply(inout bit<32> reg, out bit<32> ret) {
+            if(meta.transition_type == 6) {
+                reg = hdr.metadata.wan_addr;
+            }
+            ret = reg;
+        }
+    };
+    RegisterAction<bit<16>, flow_num_t, bit<16>>(val0) reg_val0_rw = {
+        void apply(inout bit<16> reg, out bit<16> ret) {
+            if(meta.transition_type == 6) {
+                reg = hdr.metadata.wan_port;
+            }
+            ret = reg;
+        }
+    };
+
+    action key3_rw(in flow_num_t index) {
+        hdr.metadata.src_addr = reg_key3_rw.execute(index);
     }
 
+    action key2_rw(in flow_num_t index) {
+        hdr.metadata.dst_addr = reg_key2_rw.execute(index);
+    } 
+
+    action key1_rw(in flow_num_t index) {
+        bit<32>src_dst_port = reg_key1_rw.execute(index);
+        hdr.metadata.src_port = src_dst_port[31:16];
+        hdr.metadata.dst_port = src_dst_port[15:0];
+    } 
+
+    action key0_rw(in flow_num_t index) {
+        hdr.metadata.protocol = reg_key0_rw.execute(index);
+    } 
+
+    action val1_rw(in flow_num_t index) {
+        hdr.metadata.wan_addr = reg_val1_rw.execute(index);
+    } 
+
+    action val0_rw(in flow_num_t index) {
+        hdr.metadata.wan_port = reg_val0_rw.execute(index);
+    } 
+
     apply {
+        key3_rw(meta.index_lo);
+        key2_rw(meta.index_lo);
+        key1_rw(meta.index_lo);
+        key0_rw(meta.index_lo);
+        val1_rw(meta.index_lo);
+        val0_rw(meta.index_lo);
+        
+        /*
+        // 不要像下面这样写，下面这样写会导致stage过多从而使编译器出错
+        // 尽管，编译器不会报错（坑爹），生成程序还是有问题，
+        // 传index时有概率(40%左右)会传给val1错误的index
+        if(meta.transition_type == 6) {
+            val1_write(meta.index_lo);
+            val0_write(meta.index_lo);
+        }
+        else{
+            val1_read(meta.index_lo);
+            val0_read(meta.index_lo);
+        }
         if (meta.need_match == 0) {
             key3_write(meta.index_lo);
             key0_write(meta.index_lo);
@@ -577,15 +674,9 @@ control KV(
             key1_read(meta.index_lo);
             key2_read(meta.index_lo);
         }
+        */
+
         // 对于LB，FireWall，FlowCounter，RateLimiter，下面对val的读写可以做定制
-        if(meta.transition_type == 6) {
-            val1_write(meta.index_lo);
-            val0_write(meta.index_lo);
-        }
-        else{
-            val1_read(meta.index_lo);
-            val0_read(meta.index_lo);
-        }
     }
 }
 
@@ -697,8 +788,8 @@ control Ingress(
 
     KV() kv0;
     KV() kv1;
-    KV() kv2;
-    KV() kv3;
+    //KV() kv2;
+    //KV() kv3;
 
     /*
     meta.transition_type 4
@@ -709,6 +800,9 @@ control Ingress(
     meta.accept 1
     */
     apply {
+        // stage 0
+        meta.src_dst_port = hdr.metadata.src_port ++ hdr.metadata.dst_port;
+
         if((meta.transition_type & 0b1110) == 0) {// 0/1
             hdr.metadata.switch_time = meta.time; // This cannot be assigned in parser, so it is assigned here.
             hdr.metadata.new_version = 0;
@@ -729,7 +823,7 @@ control Ingress(
         }
 
 
-        // stage 0
+        
         // 检查parse和checksum
         if(ig_intr_prsr_md.parser_err != PARSER_ERROR_OK || meta.metadata_checksum_err) {  // metadata checksum error
             meta.transition_type = 7;
@@ -740,7 +834,7 @@ control Ingress(
             // 但是这个赋值会改变编译器的PHV分配方式
             // 如果不加，原先的分配方式似乎存在bug，会导致莫名奇妙的parse_error，加了就没有bug
             // （这个赋值可以换成任何对ig_intr_prsr_md.parser_err造成读取的赋值）
-            hdr.ethernet.ether_type = ig_intr_prsr_md.parser_err;
+            // hdr.ethernet.ether_type = ig_intr_prsr_md.parser_err;
         }
         else {
             if(meta.transition_type == 2 || 
@@ -795,7 +889,7 @@ control Ingress(
         // stage 3,4,5,6
         if(meta.ingress_end == false && (meta.transition_type != 6 ||meta.version == hdr.metadata.old_version)) {
             if(meta.index_hi == 0) kv0.apply(hdr, meta);
-            else if(meta.index_hi == 1) kv1.apply(hdr, meta);
+            else kv1.apply(hdr, meta);
             //else if(meta.index_hi == 2) kv2.apply(hdr, meta);
             //else if(meta.index_hi == 3) kv3.apply(hdr, meta);
         }
@@ -883,6 +977,7 @@ control Ingress(
             //      如果下一个包是反向包，必然被丢掉，除非正好回滚到对应时间
         }
 
+        /*
         if(meta.transition_type == 1) {
             if(meta.all_flow_timeout == 1 || meta.match == 0 || meta.main_flow_timeout == 1) {
                 hdr.debug.setValid();
@@ -904,6 +999,7 @@ control Ingress(
                 hdr.debug._4 = 0;
             }
         }
+        */
                 
         
         // stage 10
@@ -941,7 +1037,7 @@ control IngressDeparser(
         packet.emit(hdr.ethernet);
         packet.emit(hdr.metadata);
         packet.emit(hdr.ipv4);
-        packet.emit(hdr.debug);
+        //packet.emit(hdr.debug);
     }
 }
 
@@ -1029,9 +1125,11 @@ control Egress(
     }
 
     apply { 
+        /*
         if(eg_intr_prsr_md.parser_err != PARSER_ERROR_OK) {
             hdr.ethernet.src_addr[7:0] = 0;
         }
+        */
         // By default: drop packets with "eg_intr_prsr_md.parser_err != 0"
         
         eg_intr_dprs_md.drop_ctl = 0;
@@ -1064,7 +1162,7 @@ control Egress(
             hdr.metadata.setInvalid();
             hdr.ethernet.ether_type = TYPE_IPV4;
         }
-        /*else if((meta.transition_type & 0b1110) == 4) {// 4, 5
+        else if((meta.transition_type & 0b1110) == 4) {// 4, 5
             hdr.metadata.src_addr = hdr.ipv4.src_addr;
             hdr.metadata.dst_addr = hdr.ipv4.dst_addr;
             hdr.metadata.protocol = hdr.ipv4.protocol;
@@ -1077,10 +1175,9 @@ control Egress(
                 hdr.metadata.src_port = hdr.udp.src_port;
                 hdr.metadata.dst_port = hdr.udp.dst_port;
             }
-        }*/
-        mac_table.apply();
+        }
 
-        
+        mac_table.apply();
     }
 }
 
