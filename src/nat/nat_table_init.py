@@ -8,31 +8,6 @@ switch_mac = [0x020000000001, 0x020000000001, 0x020000000101, 0x020000000201]
 for i in range(worker_num):
     bfrt.nat.pipe.IngressParser.PORT_METADATA.add(worker_port[i], worker_type[i])
 
-'''
-try:
-    for i in range(worker_num):
-        if worker_type[i] == 2:
-            bfrt.nat.pipe.Ingress.send_out.forward_to_nf_table.set_default_with_l3_forward(worker_port[i])
-            #bfrt.nat.pipe.Ingress.send_out.forward_to_nf_table.set_default_with_l3_forward(worker_port[i], 0x020000000001, 0x020000000002)
-except:
-    print("Cannot load forward_to_nf_table.")
-
-try:
-    for i in range(worker_num):
-        bfrt.nat.pipe.Ingress.send_out.l2_forward_table.add_with_l2_forward(worker_mac[i], worker_port[i])
-except:
-    print("Cannot load l2_forward_table.")
-
-try:
-    for i in range(worker_num):
-        bfrt.nat.pipe.Ingress.send_out.l3_forward_table.add_with_l3_forward(worker_ip[i], worker_port[i])
-        #bfrt.nat.pipe.Ingress.send_out.l3_forward_table.add_with_l3_forward(worker_ip[i], worker_port[i], switch_mac[i], worker_mac[i])
-    #bfrt.nat.pipe.Ingress.send_out.l3_forward_table.set_default_with_l3_forward(worker_port[3], switch_mac[3], worker_mac[3])
-    bfrt.nat.pipe.Ingress.send_out.l3_forward_table.set_default_with_l3_forward(worker_port[3])
-except:
-    print("Cannot load l3_forward_table.")
-'''
-
 try:
     # smaller value means higher priority
     for i in range(worker_num):

@@ -10,14 +10,16 @@
 #include <cstdlib>
 #include <arpa/inet.h>
 
-#include "shared_metadata.h"
-#include "type.h"
-#include "hdr.h"
+#include "../common/type.h"
+#include "../common/hash.hpp"
+#include "../common/list.hpp"
+#include "../common/checksum.hpp"
+#include "../common/heavy_hitter.hpp"
 
-#include "hash.hpp"
-#include "list.hpp"
-#include "checksum.hpp"
-#include "heavy_hitter.hpp"
+#include "shared_metadata.h"
+#include "nat_hdr.h"
+
+
 
 #ifdef DEBUG
 #define debug_printf(...) fprintf(stderr, __VA_ARGS__)
@@ -53,7 +55,7 @@ const u8 TCP_PROTOCOL = 0x06;
 const u8 UDP_PROTOCOL = 0x11;
 
 const u32 MAX_FRAME_SIZE = 1514;
-const size_t PACKET_WITH_META_LEN = sizeof(ethernet_t) + sizeof(nat_metadata_t);
+const size_t PACKET_WITH_META_LEN = sizeof(ethernet_t) + sizeof(metadata_t);
 const size_t MIN_UDP_LEN = PACKET_WITH_META_LEN + sizeof(ip_t) + sizeof(udp_t);
 const size_t MIN_TCP_LEN = PACKET_WITH_META_LEN + sizeof(ip_t) + sizeof(tcp_t);
 
@@ -94,28 +96,15 @@ flow_num_t get_index(const T &data)
 }
 
 
-/*
- * predefined MAC address is in network byte order
- */
-struct MAC_pair{
-    u16 hi;
-    u32 lo;
-}__attribute__ ((__packed__));
-
-static_assert(sizeof(MAC_pair) == 6);
-
-MAC_pair SWITCH_INNER_MAC_PAIR = {htons(SHARED_SWITCH_INNER_MAC_HI16), htonl(SHARED_SWITCH_INNER_MAC_LO32)};
-MAC_pair NF_INNER_MAC_PAIR = {htons(SHARED_NF_INNER_MAC_HI16), htonl(SHARED_NF_INNER_MAC_LO32)};
-
-const u8 *SWITCH_INNER_MAC = (u8 *) &SWITCH_INNER_MAC_PAIR;
-const u8 *NF_INNER_MAC = (u8 *) &NF_INNER_MAC_PAIR;
+u8 SWITCH_INNER_MAC[6];
+u8 NF_INNER_MAC[6];
 
 
 pcap_t *device;
 // for regular packet
 u8 buf[MAX_FRAME_SIZE] __attribute__ ((aligned (64)));
 // for updating message
-u8 metadata_buf[sizeof(ethernet_t) + sizeof(nat_metadata_t)] __attribute__ ((aligned (64)));
+u8 metadata_buf[sizeof(ethernet_t) + sizeof(metadata_t)] __attribute__ ((aligned (64)));
 /*
  * all bytes in these data structure are in network order
  */
@@ -182,6 +171,11 @@ void print_map(flow_id_t id, flow_val_t val, flow_num_t index)
 
 void nf_init()
 {       
+    *(u16*)SWITCH_INNER_MAC = htons(SHARED_SWITCH_INNER_MAC_HI16);
+    *(u32*)(SWITCH_INNER_MAC+2) = htonl(SHARED_SWITCH_INNER_MAC_LO32);
+    *(u16*)NF_INNER_MAC = htons(SHARED_NF_INNER_MAC_HI16);
+    *(u32*)(NF_INNER_MAC+2) = htonl(SHARED_NF_INNER_MAC_LO32);
+
     inuse_head.l = inuse_head.r = &inuse_head;
     sw_head.l = sw_head.r = &sw_head;
 
@@ -289,7 +283,7 @@ void send_update(flow_num_t index)
     debug_printf("version %x -> %x\n", hdr->metadata.old_version, hdr->metadata.new_version);
 }
 
-void try_add_update(flow_num_t wait_set_index, nat_metadata_t &metadata, host_time_t timestamp)
+void try_add_update(flow_num_t wait_set_index, metadata_t &metadata, host_time_t timestamp)
 {
     if(!wait_set[wait_set_index].is_waiting) {
         flow_entry_t *new_entry = heavy_hitter_get(wait_set_index);
@@ -321,7 +315,7 @@ void try_add_update(flow_num_t wait_set_index, nat_metadata_t &metadata, host_ti
 void forward_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
 {
 // verify
-    nat_metadata_t &metadata = hdr->metadata;
+    metadata_t &metadata = hdr->metadata;
     
     bool is_tcp = metadata.map.id.protocol == TCP_PROTOCOL;
     if((is_tcp && packet_len < MIN_TCP_LEN) || (!is_tcp && packet_len < MIN_UDP_LEN))
@@ -432,7 +426,7 @@ void forward_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
 
 void backward_process(host_time_t timestamp, len_t packet_len, hdr_t * const hdr)
 {
-    nat_metadata_t &metadata = hdr->metadata;
+    metadata_t &metadata = hdr->metadata;
 
 // verify
     bool is_tcp = metadata.map.id.protocol == TCP_PROTOCOL;
@@ -521,7 +515,7 @@ void backward_process(host_time_t timestamp, len_t packet_len, hdr_t * const hdr
 
 void ack_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
 {
-    nat_metadata_t &metadata = hdr->metadata;
+    metadata_t &metadata = hdr->metadata;
 
     flow_num_t index = ntohl(metadata.index);
 

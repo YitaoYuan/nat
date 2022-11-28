@@ -3,6 +3,14 @@
 FILE_DIR=`cd $(dirname $0); pwd`
 . $FILE_DIR/utils.sh
 
+create_dir()
+{
+  if [ ! \( -e $1 \) ];
+  then 
+    echo_r "mkdir -p $1"
+  fi
+}
+
 set -e
 
 if [ $# -ne 2 ];
@@ -26,7 +34,7 @@ fi
 
 if [ $TAIL == "cpp" ];
 then 
-  echo_r "mkdir -p $B_PATH"
+  create_dir $B_PATH
   COMPILE_ARGS="-std=c++11 -lpcap -O3 -Wall -Wextra -Wshadow -Wno-unused -Wno-address-of-packed-member"
   echo_r "g++ $P_PATH -o $B_PATH/$NAME ${COMPILE_ARGS} "
   exit 0
@@ -38,7 +46,7 @@ then
   exit 1
 fi
 
-echo_r "mkdir -p $B_PATH"
+create_dir $B_PATH
 echo_r "cd $B_PATH"
 echo_r "cmake $SDE/p4studio/ \
   -DCMAKE_INSTALL_PREFIX=$SDE_INSTALL \

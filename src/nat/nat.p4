@@ -30,10 +30,6 @@ const flow_num_t SWITCH_FLOW_NUM = SHARED_SWITCH_FLOW_NUM;
 const flow_num_t SWITCH_FLOW_NUM_PER_REG = SHARED_SWITCH_FLOW_NUM_PER_REG;
 
 const time_t AGING_TIME = SHARED_AGING_TIME_FOR_SWITCH;
-const time_t HALF_AGING_TIME = SHARED_AGING_TIME_FOR_SWITCH / 2;
-
-const mac_addr_t SWITCH_INNER_MAC = (bit<16>)SHARED_SWITCH_INNER_MAC_HI16 ++ (bit<32>)SHARED_SWITCH_INNER_MAC_LO32;
-const mac_addr_t NF_INNER_MAC = (bit<16>)SHARED_NF_INNER_MAC_HI16 ++ (bit<32>)SHARED_NF_INNER_MAC_LO32;
 
 /*************************************************************************
 *********************** H E A D E R S  ***********************************
@@ -45,7 +41,7 @@ header ethernet_t {
     bit<16>   ether_type;
 }
 
-header nat_metadata_t {//32
+header metadata_t {//32
     ip4_addr_t  src_addr;
     ip4_addr_t  dst_addr;
     port_t      src_port;
@@ -84,7 +80,7 @@ header ipv4_t {
     ip4_addr_t dst_addr;
 }
 
-struct ipv4_flow_id_t { // size == 14
+struct ipv4_flow_id_t {
     ip4_addr_t   src_addr;
     ip4_addr_t   dst_addr;
     port_t      src_port;
@@ -117,34 +113,22 @@ header L3L4_t {
     port_t dst_port;
 }
 
-header debug_t {
-    bit<8> _1;
-    bit<8> _2;
-    bit<8> _3;
-    bit<8> _4;
-}
-
 struct headers {
     ethernet_t          ethernet;
-    nat_metadata_t      metadata;
+    metadata_t          metadata;
     ipv4_t              ipv4;
     tcp_t               tcp;
     udp_t               udp;
-    debug_t             debug;
 }
 
 struct nf_port_t{
     bit<2>  port_type; 
     bit<14> unused;
-    /*bit<6>  unused1;
-    bit<14>  unused;
-    bit<32>*/
 }
 
 struct ingress_metadata {
     /* parser -> ingress */
     bool            metadata_checksum_err;
-    //checksum_t      L4_partial_complement_sum;
     nf_port_t       nf_port_hdr;
     time_t          time;
     bit<4>          transition_type;    // 0:in->out/nf, 1:out->in/nf, 2:nf->out, 3:nf->in, 4:in->nf, 5:out->nf, 6:update, 7:drop
@@ -199,17 +183,10 @@ parser IngressParser(packet_in packet,
         packet.extract(ig_intr_md);
 
         meta.time = ig_intr_md.ingress_mac_tstamp[SHARED_TIME_OFFSET+15:SHARED_TIME_OFFSET];// truncate
-        // meta.time *= 2^16/1000
         
         transition select(ig_intr_md.resubmit_flag) {
             0 : parse_port_metadata;
-            1 : parse_resubmit_metadata;
         }
-    }
-
-    state parse_resubmit_metadata {
-        // They are both stored in meta.nf_port_hdr
-        transition parse_port_metadata;
     }
 
     state parse_port_metadata {
@@ -358,52 +335,6 @@ control send_out(
         ig_intr_dprs_md.drop_ctl = 0;//这个drop_ctl=0一定不能省略，不知道为什么，明明文档说初始化为0的
         ig_intr_tm_md.ucast_egress_port = port;
     }
-/*
-    action l3_forward(bit<9> port, mac_addr_t smac, mac_addr_t dmac) {
-        set_egress_port(port);
-        hdr.ethernet.src_addr = smac;
-        hdr.ethernet.dst_addr = dmac;
-    }
-
-    table l3_forward_table{
-        key = {
-            hdr.ipv4.dst_addr: exact;
-        }
-        actions = {
-            //l3_forward_in;
-            l3_forward;
-            drop;
-        }
-        size = 32;
-        default_action = drop();
-    }
-
-    action l2_forward(bit<9> port) {
-        set_egress_port(port);
-    }
-
-    table l2_forward_table{
-        key = {
-            hdr.ethernet.dst_addr: exact;
-        }
-        actions = {
-            l2_forward;
-            drop;
-        }
-        size = 32;
-        default_action = drop();
-    }
-
-    
-    table forward_to_nf_table {
-        actions = {
-            l3_forward;
-            drop;
-        }
-        size = 1;// you can only set default_action 
-        default_action = drop();
-    }
-*/
 
     table forward_table {
         key = {
@@ -745,12 +676,12 @@ control Ingress(
         }
     };
 
-    //分成两个，一个是time，只有更不更新两种选择，另一个是history，记录是否曾timeout，BINGO~
     RegisterAction<time_t, flow_num_t, void>(main_flow_timestamp) reg_force_update_mainflow_timeout = {
         void apply(inout time_t reg_time) {
             reg_time = meta.time;
         } 
     };
+
     RegisterAction<time_t, flow_num_t, bit<1>>(main_flow_timestamp) reg_read_mainflow_timeout = {
         void apply(inout time_t reg_time, out bit<1> ret) {
             if(meta.time - reg_time > AGING_TIME) {
@@ -772,34 +703,12 @@ control Ingress(
             }
         }
     };
-    /*
-    RegisterAction<time_t, flow_num_t, bit<1>>(main_flow_timestamp) reg_main_flow_timestamp = {
-        void apply(inout time_t reg_time, out bit<1> ret) {
-            if(meta.time - reg_time > AGING_TIME) {
-                ret = 1;
-            }
-            else {
-                ret = 0;
-            }
-            if(meta.match == 1)
-                reg_time = meta.time;
-        }
-    };
-    */
 
     KV() kv0;
     KV() kv1;
     //KV() kv2;
     //KV() kv3;
 
-    /*
-    meta.transition_type 4
-    meta.ingress_end 1
-    hdr.metadata.index 18
-    hdr.metadata.version 8
-    meta.all_flow_timeout 1
-    meta.accept 1
-    */
     apply {
         // stage 0
         meta.src_dst_port = hdr.metadata.src_port ++ hdr.metadata.dst_port;
@@ -822,19 +731,10 @@ control Ingress(
             hdr.metadata.index[SHARED_SWITCH_FLOW_NUM_LOG-1:0] = hashmap1.get({id.dst_addr, id.dst_port});
         }
 
-
-        
         // 检查parse和checksum
         if(ig_intr_prsr_md.parser_err != PARSER_ERROR_OK || meta.metadata_checksum_err) {  // metadata checksum error
             meta.transition_type = 7;
             meta.ingress_end = true;
-
-            // 不要去掉！！！（似乎现在可以去掉了）
-            // 这个赋值不会对程序的逻辑产生任何影响
-            // 但是这个赋值会改变编译器的PHV分配方式
-            // 如果不加，原先的分配方式似乎存在bug，会导致莫名奇妙的parse_error，加了就没有bug
-            // （这个赋值可以换成任何对ig_intr_prsr_md.parser_err造成读取的赋值）
-            // hdr.ethernet.ether_type = ig_intr_prsr_md.parser_err;
         }
         else {
             if(meta.transition_type == 2 || 
@@ -878,13 +778,6 @@ control Ingress(
         if ((meta.transition_type == 0 && meta.all_flow_timeout == 0) || meta.transition_type == 1) {
             meta.need_match = 1;
         }
-
-        /*
-        if(ig_intr_md.resubmit_flag == 0) {
-            // this assignment make it valid
-            ig_intr_dprs_md.resubmit_type = 0;
-        }
-        */
 
         // stage 3,4,5,6
         if(meta.ingress_end == false && (meta.transition_type != 6 ||meta.version == hdr.metadata.old_version)) {
@@ -945,8 +838,8 @@ control Ingress(
         // 综合match的结果 
         
         
-            // 这个if被分成了两个stage，注释前在上一个stage(5)，注释后在下一个stage(6)
-            // if的判断结果可以在stage间传递
+        // 这个if被分成了两个stage，注释前在上一个stage(5)，注释后在下一个stage(6)
+        // if的判断结果可以在stage间传递
         if(meta.need_match == 1) {
             if(meta.cmp.src_addr != meta.id.src_addr)
                 meta.match = 0;
@@ -969,58 +862,10 @@ control Ingress(
             else {
                 meta.main_flow_timeout = reg_read_mainflow_timeout.execute(hdr.metadata.index);
             }
-            
-            // 我们不怕时间戳回滚，因为：
-            //  0. 大不了滚到一半，server更新一下
-            //  1. 主流超时后，副流必向server通知更新
-            //  2. 如果主流超时后，一段时间内没有副流流量，那么会导致副流超时：
-            //      如果下一个包是正向包，必然抢占
-            //      如果下一个包是反向包，必然被丢掉，除非正好回滚到对应时间
         }
-
-        /*
-        if(meta.transition_type == 1) {
-            if(meta.all_flow_timeout == 1 || meta.match == 0 || meta.main_flow_timeout == 1) {
-                hdr.debug.setValid();
-
-                if(meta.all_flow_timeout == 1)
-                    hdr.debug._1 = 1;
-                else
-                    hdr.debug._1 = 0;
-
-                if(meta.match == 1)
-                    hdr.debug._2 = 1;
-                else
-                    hdr.debug._2 = 0;
-                
-                if(meta.main_flow_timeout == 1)
-                    hdr.debug._3 = 1;
-                else
-                    hdr.debug._3 = 0;
-                hdr.debug._4 = 0;
-            }
-        }
-        */
-                
-        
+   
         // stage 10
-        // debug
         send_out.apply(hdr, meta, ig_intr_md, ig_intr_dprs_md, ig_intr_tm_md);
-        
-        /*if(ig_intr_tm_md.ucast_egress_port == 0) {
-            hdr.ethernet.src_addr[7:0] = 0;
-        }*/
-        
-        // debug
-        //ig_intr_tm_md.bypass_egress = 1;
-        /*
-        if(hdr.ethernet.dst_addr[7:0] == 1) {
-            hdr.ethernet.ether_type = 0;
-        }
-        if(hdr.ethernet.ether_type == hdr.tcp.src_port) {
-            hdr.ipv4.protocol = 0;
-        }
-        */
     }
 }
 
@@ -1038,7 +883,6 @@ control IngressDeparser(
         packet.emit(hdr.ethernet);
         packet.emit(hdr.metadata);
         packet.emit(hdr.ipv4);
-        //packet.emit(hdr.debug);
     }
 }
 
@@ -1056,7 +900,7 @@ parser EgressParser(packet_in packet,
 
     state parse_ethernet {
         packet.extract(hdr.ethernet);
-        transition select(hdr.ethernet.ether_type) {//没检查MAC addr，没必要
+        transition select(hdr.ethernet.ether_type) {
             TYPE_METADATA   :   parse_metadata;
             default         :   accept;
         }
@@ -1076,7 +920,6 @@ parser EgressParser(packet_in packet,
         transition select(hdr.ipv4.protocol) {
             TCP_PROTOCOL    :   parse_tcp;
             UDP_PROTOCOL    :   parse_udp;
-            // no other
         }
     }
 
@@ -1126,13 +969,6 @@ control Egress(
     }
 
     apply { 
-        /*
-        if(eg_intr_prsr_md.parser_err != PARSER_ERROR_OK) {
-            hdr.ethernet.src_addr[7:0] = 0;
-        }
-        */
-        // By default: drop packets with "eg_intr_prsr_md.parser_err != 0"
-        
         eg_intr_dprs_md.drop_ctl = 0;
 
         if(hdr.ethernet.ether_type != TYPE_METADATA) return;

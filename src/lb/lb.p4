@@ -15,6 +15,7 @@ typedef bit<16> time_t;
 typedef bit<8> version_t;
 typedef bit<16> checksum_t;
 typedef bit<SHARED_SWITCH_REG_NUM_LOG> index_hi_t;
+typedef bit<16> lb_hash_t;
 
 const bit<8>  TCP_PROTOCOL = 0x06;
 const bit<8>  UDP_PROTOCOL = 0x11;
@@ -22,18 +23,10 @@ const bit<8>  UDP_PROTOCOL = 0x11;
 const bit<16> TYPE_IPV4 = 0x800;
 const bit<16> TYPE_METADATA = SHARED_TYPE_METADATA;
 
-//you can change these by tables to support dynamic & multiple LAN address allocation
-const ip4_addr_t LAN_ADDR = SHARED_LAN_ADDR;// 192.168.0.0
-const ip4_addr_t LAN_ADDR_MASK = SHARED_LAN_ADDR_MASK;// /24
-
 const flow_num_t SWITCH_FLOW_NUM = SHARED_SWITCH_FLOW_NUM;
 const flow_num_t SWITCH_FLOW_NUM_PER_REG = SHARED_SWITCH_FLOW_NUM_PER_REG;
 
 const time_t AGING_TIME = SHARED_AGING_TIME_FOR_SWITCH;
-const time_t HALF_AGING_TIME = SHARED_AGING_TIME_FOR_SWITCH / 2;
-
-const mac_addr_t SWITCH_INNER_MAC = (bit<16>)SHARED_SWITCH_INNER_MAC_HI16 ++ (bit<32>)SHARED_SWITCH_INNER_MAC_LO32;
-const mac_addr_t NF_INNER_MAC = (bit<16>)SHARED_NF_INNER_MAC_HI16 ++ (bit<32>)SHARED_NF_INNER_MAC_LO32;
 
 /*************************************************************************
 *********************** H E A D E R S  ***********************************
@@ -45,7 +38,7 @@ header ethernet_t {
     bit<16>   ether_type;
 }
 
-header nat_metadata_t {//32
+header metadata_t {//32
     ip4_addr_t  src_addr;
     ip4_addr_t  dst_addr;
     port_t      src_port;
@@ -53,8 +46,8 @@ header nat_metadata_t {//32
     bit<8>      protocol;
     bit<8>      zero1;
 
-    ip4_addr_t  wan_addr;
-    port_t      wan_port;
+    ip4_addr_t  server_addr;
+    //port_t      wan_port;
 
     version_t   old_version;
     version_t   new_version;
@@ -84,7 +77,7 @@ header ipv4_t {
     ip4_addr_t dst_addr;
 }
 
-struct ipv4_flow_id_t { // size == 14
+struct ipv4_flow_id_t {
     ip4_addr_t   src_addr;
     ip4_addr_t   dst_addr;
     port_t      src_port;
@@ -117,43 +110,33 @@ header L3L4_t {
     port_t dst_port;
 }
 
-header debug_t {
-    bit<8> _1;
-    bit<8> _2;
-    bit<8> _3;
-    bit<8> _4;
-}
-
 struct headers {
     ethernet_t          ethernet;
-    nat_metadata_t      metadata;
+    metadata_t          metadata;
     ipv4_t              ipv4;
     tcp_t               tcp;
     udp_t               udp;
-    debug_t             debug;
 }
 
 struct nf_port_t{
     bit<2>  port_type; 
     bit<14> unused;
-    /*bit<6>  unused1;
-    bit<14>  unused;
-    bit<32>*/
 }
 
 struct ingress_metadata {
     /* parser -> ingress */
     bool            metadata_checksum_err;
-    //checksum_t      L4_partial_complement_sum;
     nf_port_t       nf_port_hdr;
     time_t          time;
     bit<4>          transition_type;    // 0:in->out/nf, 1:out->in/nf, 2:nf->out, 3:nf->in, 4:in->nf, 5:out->nf, 6:update, 7:drop
 
     /* ingress */
+    lb_hash_t       lb_hash;
+    lb_hash_t       lb_hash_mask;
     bool            ingress_end;
     bit<1>          all_flow_timeout;
     bit<1>          main_flow_timeout;
-    bit<8>          new_type_and_update;
+    //bit<8>          new_type_and_update;
     bit<1>          accept;
 
     bit<32>         src_dst_port;
@@ -162,7 +145,7 @@ struct ingress_metadata {
     flow_num_t      index_lo;
 
     ipv4_flow_id_t  id;
-    ipv4_flow_id_t  cmp;
+    //ipv4_flow_id_t  cmp;
     
     bit<1>          match;
     bit<1>          need_match;
@@ -199,17 +182,10 @@ parser IngressParser(packet_in packet,
         packet.extract(ig_intr_md);
 
         meta.time = ig_intr_md.ingress_mac_tstamp[SHARED_TIME_OFFSET+15:SHARED_TIME_OFFSET];// truncate
-        // meta.time *= 2^16/1000
         
         transition select(ig_intr_md.resubmit_flag) {
             0 : parse_port_metadata;
-            1 : parse_resubmit_metadata;
         }
-    }
-
-    state parse_resubmit_metadata {
-        // They are both stored in meta.nf_port_hdr
-        transition parse_port_metadata;
     }
 
     state parse_port_metadata {
@@ -222,9 +198,9 @@ parser IngressParser(packet_in packet,
 
         transition select(hdr.ethernet.ether_type ++ meta.nf_port_hdr.port_type) {//没检查MAC addr，没必要
             TYPE_METADATA ++ 2w2:   parse_metadata;
-            TYPE_IPV4 ++ 2w0:   parse_ipv4_from_LAN;
+            TYPE_IPV4 ++ 2w0:   maybe_type_0;
             TYPE_IPV4 ++ 2w1:   maybe_type_1;
-            default         :   parse_other_flow;
+            //default         :   parse_other_flow;
         }
     }
 
@@ -234,7 +210,7 @@ parser IngressParser(packet_in packet,
         meta.metadata_checksum_err = metadata_csum.verify();
         transition select(hdr.metadata.type_and_update) {
             (4w2 ++ 4w0) &&& (4w15 ++ 4w0):   mark_type_2;
-            (4w3 ++ 4w0) &&& (4w15 ++ 4w0):   mark_type_3;
+            //(4w3 ++ 4w0) &&& (4w15 ++ 4w0):   mark_type_3;
             (4w6 ++ 4w0) &&& (4w15 ++ 4w0):   mark_type_6;
         }
     }
@@ -244,22 +220,14 @@ parser IngressParser(packet_in packet,
         transition accept;
     }
 
-    state mark_type_3 {
+    /*state mark_type_3 {
         meta.transition_type = 3;
         transition accept;
-    }
+    }*/
 
     state mark_type_6 {
         meta.transition_type = 6;
         transition accept;
-    }
-
-    state parse_ipv4_from_LAN {
-        ipv4_t ip = packet.lookahead<ipv4_t>();
-        transition select(ip.dst_addr) {
-            LAN_ADDR &&& LAN_ADDR_MASK  :   parse_other_flow;// in->in
-            default                     :   maybe_type_0;// in->out
-        }
     }
 
     state maybe_type_0 {
@@ -267,14 +235,14 @@ parser IngressParser(packet_in packet,
         transition select(ip.protocol ++ ip.ihl) {
             TCP_PROTOCOL ++ 4w5 :   mark_type_0;
             UDP_PROTOCOL ++ 4w5 :   mark_type_0;
-            default             :   parse_other_flow;
+            //default             :   parse_other_flow;
         }
     }
 
     state mark_type_0 {
         meta.transition_type = 0;
         hdr.metadata.type_and_update = 0x00;
-        meta.new_type_and_update = 0x40;
+        //meta.new_type_and_update = 0x40;
         transition initialize_metadata;
     }
 
@@ -283,14 +251,14 @@ parser IngressParser(packet_in packet,
         transition select(ip.protocol ++ ip.ihl) {
             TCP_PROTOCOL ++ 4w5 :   mark_type_1;
             UDP_PROTOCOL ++ 4w5 :   mark_type_1;
-            default             :   parse_other_flow;
+            //default             :   parse_other_flow;
         }
     }
 
     state mark_type_1 {
         meta.transition_type = 1;
         hdr.metadata.type_and_update = 0x10;
-        meta.new_type_and_update = 0x50;
+        //meta.new_type_and_update = 0x50;
         transition initialize_metadata;
     }
 
@@ -330,11 +298,11 @@ parser IngressParser(packet_in packet,
         transition accept;
     }
 
-    state parse_other_flow {
+    /*state parse_other_flow {
         meta.metadata_checksum_err = false;
         meta.transition_type = 8;
         transition accept;
-    }
+    }*/
 }
 
 
@@ -358,67 +326,20 @@ control send_out(
         ig_intr_dprs_md.drop_ctl = 0;//这个drop_ctl=0一定不能省略，不知道为什么，明明文档说初始化为0的
         ig_intr_tm_md.ucast_egress_port = port;
     }
-/*
-    action l3_forward(bit<9> port, mac_addr_t smac, mac_addr_t dmac) {
-        set_egress_port(port);
-        hdr.ethernet.src_addr = smac;
-        hdr.ethernet.dst_addr = dmac;
-    }
-
-    table l3_forward_table{
-        key = {
-            hdr.ipv4.dst_addr: exact;
-        }
-        actions = {
-            //l3_forward_in;
-            l3_forward;
-            drop;
-        }
-        size = 32;
-        default_action = drop();
-    }
-
-    action l2_forward(bit<9> port) {
-        set_egress_port(port);
-    }
-
-    table l2_forward_table{
-        key = {
-            hdr.ethernet.dst_addr: exact;
-        }
-        actions = {
-            l2_forward;
-            drop;
-        }
-        size = 32;
-        default_action = drop();
-    }
-
-    
-    table forward_to_nf_table {
-        actions = {
-            l3_forward;
-            drop;
-        }
-        size = 1;// you can only set default_action 
-        default_action = drop();
-    }
-*/
 
     table forward_table {
         key = {
             meta.transition_type: ternary;
             meta.match: ternary;
             meta.main_flow_timeout: ternary;
-            hdr.ethernet.dst_addr: ternary;
+            hdr.metadata.server_addr: ternary;
             hdr.metadata.dst_addr: ternary;
-            hdr.metadata.src_addr: ternary;
         }
         actions = {
             set_egress_port;
             drop;
         }
-        size = 64;
+        size = 256;
         default_action = drop();
     }
 
@@ -426,17 +347,14 @@ control send_out(
         //注意，此时type 0/1还没有变成4/5
         forward_table.apply();
 
-        
-        if(meta.transition_type != 8) {
-            hdr.ethernet.ether_type = TYPE_METADATA;
-        }
+        hdr.ethernet.ether_type = TYPE_METADATA;
 
-        if((meta.transition_type & 0b1110) == 0 && (meta.match == 0 || meta.main_flow_timeout == 1)) {
+        if(meta.transition_type == 0 && (meta.match == 0 || meta.main_flow_timeout == 1)) {
             // mismatch 0/1
             if(meta.main_flow_timeout == 1)
-                hdr.metadata.type_and_update = meta.new_type_and_update | 1;
+                hdr.metadata.type_and_update = 0x41;
             else 
-                hdr.metadata.type_and_update = meta.new_type_and_update;
+                hdr.metadata.type_and_update = 0x40;
         }
         else if(meta.transition_type == 6) {
             hdr.metadata.type_and_update[0:0] = meta.accept;
@@ -453,7 +371,7 @@ control KV(
     Register<bit<32>, flow_num_t>((bit<32>)SWITCH_FLOW_NUM_PER_REG, 0) key1;
     Register<bit<8>, flow_num_t>((bit<32>)SWITCH_FLOW_NUM_PER_REG, 0) key0;
     Register<bit<32>, flow_num_t>((bit<32>)SWITCH_FLOW_NUM_PER_REG, 0) val1;
-    Register<bit<16>, flow_num_t>((bit<32>)SWITCH_FLOW_NUM_PER_REG, 0) val0;
+    //Register<bit<16>, flow_num_t>((bit<32>)SWITCH_FLOW_NUM_PER_REG, 0) val0;
 
     /*
     RegisterAction<bit<32>, flow_num_t, bit<32>>(key3) reg_key3_read = {
@@ -601,20 +519,20 @@ control KV(
     };
     RegisterAction<bit<32>, flow_num_t, bit<32>>(val1) reg_val1_rw = {
         void apply(inout bit<32> reg, out bit<32> ret) {
-            if(meta.transition_type == 6) {
-                reg = hdr.metadata.wan_addr;
+            if(meta.need_match == 0) {// 注意NAT的val是延用上一个，而load-balancer是覆盖
+                reg = hdr.metadata.server_addr;
             }
             ret = reg;
         }
     };
-    RegisterAction<bit<16>, flow_num_t, bit<16>>(val0) reg_val0_rw = {
+    /*RegisterAction<bit<16>, flow_num_t, bit<16>>(val0) reg_val0_rw = {
         void apply(inout bit<16> reg, out bit<16> ret) {
             if(meta.transition_type == 6) {
                 reg = hdr.metadata.wan_port;
             }
             ret = reg;
         }
-    };
+    };*/
 
     action key3_rw(in flow_num_t index) {
         hdr.metadata.src_addr = reg_key3_rw.execute(index);
@@ -635,12 +553,12 @@ control KV(
     } 
 
     action val1_rw(in flow_num_t index) {
-        hdr.metadata.wan_addr = reg_val1_rw.execute(index);
+        hdr.metadata.server_addr = reg_val1_rw.execute(index);
     } 
 
-    action val0_rw(in flow_num_t index) {
+    /*action val0_rw(in flow_num_t index) {
         hdr.metadata.wan_port = reg_val0_rw.execute(index);
-    } 
+    } */
 
     apply {
         key3_rw(meta.index_lo);
@@ -648,7 +566,7 @@ control KV(
         key1_rw(meta.index_lo);
         key0_rw(meta.index_lo);
         val1_rw(meta.index_lo);
-        val0_rw(meta.index_lo);
+        //val0_rw(meta.index_lo);
         
         /*
         // 不要像下面这样写，下面这样写会导致stage过多从而使编译器出错
@@ -692,6 +610,7 @@ control Ingress(
     CRCPolynomial<bit<32>>(32w0x04C11DB7, false, false, false, 32w0, 32w0) polynomial;
     Hash<bit<SHARED_SWITCH_FLOW_NUM_LOG>>(HashAlgorithm_t.CUSTOM, polynomial) hashmap0;
     Hash<bit<SHARED_SWITCH_FLOW_NUM_LOG>>(HashAlgorithm_t.CUSTOM, polynomial) hashmap1;
+    Hash<lb_hash_t>(HashAlgorithm_t.CUSTOM, polynomial) lb_hashmap;
     
     Register<version_t, flow_num_t>((bit<32>)SWITCH_FLOW_NUM, 0) version;
 
@@ -745,12 +664,12 @@ control Ingress(
         }
     };
 
-    //分成两个，一个是time，只有更不更新两种选择，另一个是history，记录是否曾timeout，BINGO~
     RegisterAction<time_t, flow_num_t, void>(main_flow_timestamp) reg_force_update_mainflow_timeout = {
         void apply(inout time_t reg_time) {
             reg_time = meta.time;
         } 
     };
+
     RegisterAction<time_t, flow_num_t, bit<1>>(main_flow_timestamp) reg_read_mainflow_timeout = {
         void apply(inout time_t reg_time, out bit<1> ret) {
             if(meta.time - reg_time > AGING_TIME) {
@@ -772,34 +691,43 @@ control Ingress(
             }
         }
     };
-    /*
-    RegisterAction<time_t, flow_num_t, bit<1>>(main_flow_timestamp) reg_main_flow_timestamp = {
-        void apply(inout time_t reg_time, out bit<1> ret) {
-            if(meta.time - reg_time > AGING_TIME) {
-                ret = 1;
-            }
-            else {
-                ret = 0;
-            }
-            if(meta.match == 1)
-                reg_time = meta.time;
-        }
-    };
-    */
 
     KV() kv0;
     KV() kv1;
     //KV() kv2;
     //KV() kv3;
+    
+    action get_hash_mask(lb_hash_t mask) {
+        meta.lb_hash_mask = mask;
+    }
 
-    /*
-    meta.transition_type 4
-    meta.ingress_end 1
-    hdr.metadata.index 18
-    hdr.metadata.version 8
-    meta.all_flow_timeout 1
-    meta.accept 1
-    */
+    table lb_hash_mask_table{// support multiple load-balance set
+        key = {
+            hdr.ipv4.dst_addr: exact;
+        }
+        actions = {
+            get_hash_mask;
+        }
+        size = 256;
+        default_action = get_hash_mask(0x0);
+    }
+
+    action get_server_addr(ip4_addr_t server_addr) {
+        hdr.metadata.server_addr = server_addr;
+    }
+
+    table lb_table{// support multiple load-balance set
+        key = {
+            hdr.ipv4.dst_addr: exact;
+            meta.lb_hash: exact;
+        }
+        actions = {
+            get_server_addr;
+        }
+        size = 32768;
+        default_action = get_server_addr(0xffffffff);
+    }
+
     apply {
         // stage 0
         meta.src_dst_port = hdr.metadata.src_port ++ hdr.metadata.dst_port;
@@ -814,32 +742,30 @@ control Ingress(
             hdr.metadata.index = 1;
 #else 
             ipv4_flow_id_t id = meta.id;
-            hdr.metadata.index[SHARED_SWITCH_FLOW_NUM_LOG-1:0] = hashmap0.get({id.src_addr, id.dst_addr, id.src_port, id.dst_port, id.protocol, 8w0});
+            hdr.metadata.index[SHARED_SWITCH_FLOW_NUM_LOG-1:0] = hashmap0.get({id.src_addr, /*id.dst_addr,*/ id.src_port, id.dst_port, id.protocol, 8w0});
 #endif
         }
         else if(meta.transition_type == 1) {
+#ifdef ONE_ENTRY_TEST
+            hdr.metadata.index = 1;
+#else
             ipv4_flow_id_t id = meta.id;
-            hdr.metadata.index[SHARED_SWITCH_FLOW_NUM_LOG-1:0] = hashmap1.get({id.dst_addr, id.dst_port});
+            hdr.metadata.index[SHARED_SWITCH_FLOW_NUM_LOG-1:0] = hashmap1.get({id.dst_addr, /*id.src_addr,*/ id.dst_port, id.src_port, id.protocol, 8w0});
+#endif
         }
 
-
+        ipv4_flow_id_t id = meta.id;
+        meta.lb_hash = lb_hashmap.get({id.src_addr, /*id.dst_addr,*/ id.src_port, id.dst_port, id.protocol, 8w0});
         
+        lb_hash_mask_table.apply();
+
         // 检查parse和checksum
         if(ig_intr_prsr_md.parser_err != PARSER_ERROR_OK || meta.metadata_checksum_err) {  // metadata checksum error
             meta.transition_type = 7;
             meta.ingress_end = true;
-
-            // 不要去掉！！！（似乎现在可以去掉了）
-            // 这个赋值不会对程序的逻辑产生任何影响
-            // 但是这个赋值会改变编译器的PHV分配方式
-            // 如果不加，原先的分配方式似乎存在bug，会导致莫名奇妙的parse_error，加了就没有bug
-            // （这个赋值可以换成任何对ig_intr_prsr_md.parser_err造成读取的赋值）
-            // hdr.ethernet.ether_type = ig_intr_prsr_md.parser_err;
         }
         else {
-            if(meta.transition_type == 2 || 
-                meta.transition_type == 3 ||
-                meta.transition_type == 8){ // 2/3
+            if(meta.transition_type == 2){ // there is no flow with type 3
                 meta.ingress_end = true;
             }
             else {
@@ -848,6 +774,8 @@ control Ingress(
         }
 
         // stage 1
+        meta.lb_hash = meta.lb_hash & meta.lb_hash_mask;
+
         meta.index_lo = hdr.metadata.index & (SWITCH_FLOW_NUM_PER_REG - 1);
         meta.index_hi = hdr.metadata.index[SHARED_SWITCH_FLOW_NUM_LOG-1:SHARED_SWITCH_FLOW_NUM_PER_REG_LOG];
         
@@ -858,12 +786,19 @@ control Ingress(
             else if(meta.transition_type == 1) {// 1
                 meta.all_flow_timeout = reg_backward_update_all_flow_timestamp.execute(hdr.metadata.index);
             }
+
+            if(meta.transition_type == 1) {
+                meta.ingress_end = true;    // flow type 1 has nothing to do except address translation.
+            }
         }
 
         meta.need_match = 0;
         meta.match = 1;
+
         // stage 2
-        if(meta.ingress_end == false) {// 0/1/6
+        lb_table.apply();
+
+        if(meta.ingress_end == false) {// 0/6
             if(meta.transition_type == 0 && meta.all_flow_timeout == 1) {
                 reg_version_inplace_update.execute(hdr.metadata.index);
             }
@@ -875,16 +810,9 @@ control Ingress(
             }
         }
     
-        if ((meta.transition_type == 0 && meta.all_flow_timeout == 0) || meta.transition_type == 1) {
+        if (meta.transition_type == 0 && meta.all_flow_timeout == 0) {
             meta.need_match = 1;
         }
-
-        /*
-        if(ig_intr_md.resubmit_flag == 0) {
-            // this assignment make it valid
-            ig_intr_dprs_md.resubmit_type = 0;
-        }
-        */
 
         // stage 3,4,5,6
         if(meta.ingress_end == false && (meta.transition_type != 6 ||meta.version == hdr.metadata.old_version)) {
@@ -916,50 +844,30 @@ control Ingress(
 
             // 副流超时时，禁止反向包的更新
             
-            else if(meta.transition_type == 1 && meta.all_flow_timeout == 1) {
+            /*else if(meta.transition_type == 1 && meta.all_flow_timeout == 1) {
                 meta.transition_type = 7;
                 meta.ingress_end = true;
-            }
+            }*/
             
-        }
-        
-        
-        
-        if(meta.need_match == 1 && hdr.metadata.protocol != meta.id.protocol) {
-            meta.match = 0;
-        }
-
-        if(meta.transition_type == 0) {
-            meta.cmp.src_addr = hdr.metadata.src_addr;
-            meta.cmp.dst_addr = hdr.metadata.dst_addr;
-            meta.cmp.src_port = hdr.metadata.src_port;
-            meta.cmp.dst_port = hdr.metadata.dst_port;
-        }
-        else {
-            meta.cmp.src_addr = hdr.metadata.dst_addr;
-            meta.cmp.dst_addr = hdr.metadata.wan_addr;
-            meta.cmp.src_port = hdr.metadata.dst_port;
-            meta.cmp.dst_port = hdr.metadata.wan_port;
         }
         
         // 综合match的结果 
         
-        
-            // 这个if被分成了两个stage，注释前在上一个stage(5)，注释后在下一个stage(6)
-            // if的判断结果可以在stage间传递
         if(meta.need_match == 1) {
-            if(meta.cmp.src_addr != meta.id.src_addr)
+            if(hdr.metadata.protocol != meta.id.protocol) 
                 meta.match = 0;
-            else if(meta.cmp.dst_addr != meta.id.dst_addr)
+            else if(hdr.metadata.src_addr != meta.id.src_addr)
                 meta.match = 0;
-            else if(meta.cmp.src_port != meta.id.src_port || meta.cmp.dst_port != meta.id.dst_port)
+            else if(hdr.metadata.dst_addr != meta.id.dst_addr)
+                meta.match = 0;
+            else if(hdr.metadata.src_port != meta.id.src_port || hdr.metadata.dst_port != meta.id.dst_port)
                 meta.match = 0;
         }
         
         meta.main_flow_timeout = 0;
-        // stage 9
+        // stage 8
         // register main_flow_time
-        if(meta.ingress_end == false) {// for type 0/1/6
+        if(meta.ingress_end == false) {// for type 0/6
             if(meta.need_match == 0) {
                 reg_force_update_mainflow_timeout.execute(hdr.metadata.index);
             }
@@ -969,58 +877,10 @@ control Ingress(
             else {
                 meta.main_flow_timeout = reg_read_mainflow_timeout.execute(hdr.metadata.index);
             }
-            
-            // 我们不怕时间戳回滚，因为：
-            //  0. 大不了滚到一半，server更新一下
-            //  1. 主流超时后，副流必向server通知更新
-            //  2. 如果主流超时后，一段时间内没有副流流量，那么会导致副流超时：
-            //      如果下一个包是正向包，必然抢占
-            //      如果下一个包是反向包，必然被丢掉，除非正好回滚到对应时间
         }
-
-        /*
-        if(meta.transition_type == 1) {
-            if(meta.all_flow_timeout == 1 || meta.match == 0 || meta.main_flow_timeout == 1) {
-                hdr.debug.setValid();
-
-                if(meta.all_flow_timeout == 1)
-                    hdr.debug._1 = 1;
-                else
-                    hdr.debug._1 = 0;
-
-                if(meta.match == 1)
-                    hdr.debug._2 = 1;
-                else
-                    hdr.debug._2 = 0;
                 
-                if(meta.main_flow_timeout == 1)
-                    hdr.debug._3 = 1;
-                else
-                    hdr.debug._3 = 0;
-                hdr.debug._4 = 0;
-            }
-        }
-        */
-                
-        
-        // stage 10
-        // debug
+        // stage 9
         send_out.apply(hdr, meta, ig_intr_md, ig_intr_dprs_md, ig_intr_tm_md);
-        
-        /*if(ig_intr_tm_md.ucast_egress_port == 0) {
-            hdr.ethernet.src_addr[7:0] = 0;
-        }*/
-        
-        // debug
-        //ig_intr_tm_md.bypass_egress = 1;
-        /*
-        if(hdr.ethernet.dst_addr[7:0] == 1) {
-            hdr.ethernet.ether_type = 0;
-        }
-        if(hdr.ethernet.ether_type == hdr.tcp.src_port) {
-            hdr.ipv4.protocol = 0;
-        }
-        */
     }
 }
 
@@ -1038,7 +898,6 @@ control IngressDeparser(
         packet.emit(hdr.ethernet);
         packet.emit(hdr.metadata);
         packet.emit(hdr.ipv4);
-        //packet.emit(hdr.debug);
     }
 }
 
@@ -1056,7 +915,7 @@ parser EgressParser(packet_in packet,
 
     state parse_ethernet {
         packet.extract(hdr.ethernet);
-        transition select(hdr.ethernet.ether_type) {//没检查MAC addr，没必要
+        transition select(hdr.ethernet.ether_type) {
             TYPE_METADATA   :   parse_metadata;
             default         :   accept;
         }
@@ -1076,7 +935,6 @@ parser EgressParser(packet_in packet,
         transition select(hdr.ipv4.protocol) {
             TCP_PROTOCOL    :   parse_tcp;
             UDP_PROTOCOL    :   parse_udp;
-            // no other
         }
     }
 
@@ -1122,17 +980,32 @@ control Egress(
         actions = {
             set_mac;
         }
-        size = 64;
+        size = 256;
+    }
+
+    action get_vip(ip4_addr_t vip) {
+        hdr.ipv4.src_addr = vip;
+    }
+
+    /*
+     * If you want to let multiple "vip" mapped into 
+     * the same "server_ip" (which means you are running 
+     * more whan one kind of services on a single server), 
+     * you can add "port" in "key" field of this table in 
+     * order to differentiate services, so that one server
+     * can serve multiple "vip".
+     */
+    table vip_table {
+        key = {
+            hdr.ipv4.src_addr: exact;
+        }
+        actions = {
+            get_vip;
+        }
+        size = 32768;
     }
 
     apply { 
-        /*
-        if(eg_intr_prsr_md.parser_err != PARSER_ERROR_OK) {
-            hdr.ethernet.src_addr[7:0] = 0;
-        }
-        */
-        // By default: drop packets with "eg_intr_prsr_md.parser_err != 0"
-        
         eg_intr_dprs_md.drop_ctl = 0;
 
         if(hdr.ethernet.ether_type != TYPE_METADATA) return;
@@ -1144,26 +1017,18 @@ control Egress(
             meta.update_udp_checksum = false;
 
 
-        if((meta.transition_type & 0b1100) == 0) {//0, 1, 2, 3
+        if((meta.transition_type & 0b1100) == 0) {//0, 1, 2
             if(meta.transition_type == 0) {
-                hdr.ipv4.src_addr = hdr.metadata.wan_addr;
-                if(meta.is_tcp)
-                    hdr.tcp.src_port = hdr.metadata.wan_port;
-                else 
-                    hdr.udp.src_port = hdr.metadata.wan_port;
+                hdr.ipv4.dst_addr = hdr.metadata.server_addr;
             }
-            else if(meta.transition_type == 1) {
-                hdr.ipv4.dst_addr = hdr.metadata.src_addr;
-                if(meta.is_tcp)
-                    hdr.tcp.dst_port = hdr.metadata.src_port;
-                else 
-                    hdr.udp.dst_port = hdr.metadata.src_port;
+            if(meta.transition_type == 1) {
+                vip_table.apply();
             }
 
             hdr.metadata.setInvalid();
             hdr.ethernet.ether_type = TYPE_IPV4;
         }
-        else if((meta.transition_type & 0b1110) == 4) {// 4, 5
+        else if(meta.transition_type == 4) {// only 4
             hdr.metadata.src_addr = hdr.ipv4.src_addr;
             hdr.metadata.dst_addr = hdr.ipv4.dst_addr;
             hdr.metadata.protocol = hdr.ipv4.protocol;
@@ -1196,8 +1061,8 @@ control ComputeChecksum(inout headers hdr, in egress_metadata meta) {
                 hdr.metadata.protocol,
                 hdr.metadata.zero1,
 
-                hdr.metadata.wan_addr,
-                hdr.metadata.wan_port,
+                hdr.metadata.server_addr,
+                //hdr.metadata.wan_port,
 
                 hdr.metadata.old_version,
                 hdr.metadata.new_version,
