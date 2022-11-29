@@ -46,15 +46,15 @@ header metadata_t {//32
     bit<8>      protocol;
     bit<8>      zero1;
 
+    ip4_addr_t  server_addr;
+
     version_t   old_version;
     version_t   new_version;
-
-    ip4_addr_t  server_addr;
-    //port_t      wan_port;
-    flow_num_t  index;
-    
     bit<8>      type_and_update;
     bit<8>      zero2;
+    
+    //port_t      wan_port;
+    flow_num_t  index;
     // 3 meanings:
     // when type == 0/1, "update" is a hint for server 
     // when type == 6 and the packet is from server, it means if the packet is a force update

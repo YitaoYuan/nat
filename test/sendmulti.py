@@ -20,7 +20,7 @@ loop = 0
 
 while True:
     loop = loop + 1
-    msg="fuckyou"    
+    msg = str(loop)
     client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     client.sendto(msg.encode('utf-8'), dst)
     client.settimeout(1)

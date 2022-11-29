@@ -1,4 +1,13 @@
 /* -*- P4_16 -*- */
+
+/*
+1. 删除switch_time
+2. 将type_and_update和zero2变为type和update_count
+3. 删除new_type_and_update main_flow_timeout
+3. 需要增加一个python脚本测试更新失败的情况
+*/
+
+
 #if __TARGET_TOFINO__ == 2
 #include <t2na.p4>
 #else
@@ -13,6 +22,7 @@ typedef bit<32> flow_num_t;
 typedef bit<16> port_t;
 typedef bit<16> time_t;
 typedef bit<8> version_t;
+typedef bit<8> counter_t;
 typedef bit<16> checksum_t;
 typedef bit<SHARED_SWITCH_REG_NUM_LOG> index_hi_t;
 
@@ -54,15 +64,13 @@ header metadata_t {//32
 
     version_t   old_version;
     version_t   new_version;
-    bit<8>      type_and_update;
-    bit<8>      zero2;
+    bit<8>      type;
+    bit<8>      main_flow_count;
     // 3 meanings:
     // when type == 0/1, "update" is a hint for server 
-    // when type == 6 and the packet is from server, it means if the packet is a force update
+    // when type == 6 and the packet is from server, "update" must be 0
     // when type == 6 and the packet is to server, it means if switch accept the update
     flow_num_t  index; // index is the hash value of flow id
-
-    time_t      switch_time;// 因为一个ACK返回的时候wait_entry可能已经没了，所以时间需要记录在packet里
     
     checksum_t  checksum;
 }
@@ -136,8 +144,6 @@ struct ingress_metadata {
     /* ingress */
     bool            ingress_end;
     bit<1>          all_flow_timeout;
-    bit<1>          main_flow_timeout;
-    bit<8>          new_type_and_update;
     bit<1>          accept;
 
     bit<32>         src_dst_port;
@@ -209,10 +215,10 @@ parser IngressParser(packet_in packet,
         packet.extract(hdr.metadata);
         metadata_csum.add(hdr.metadata);
         meta.metadata_checksum_err = metadata_csum.verify();
-        transition select(hdr.metadata.type_and_update) {
-            (4w2 ++ 4w0) &&& (4w15 ++ 4w0):   mark_type_2;
-            (4w3 ++ 4w0) &&& (4w15 ++ 4w0):   mark_type_3;
-            (4w6 ++ 4w0) &&& (4w15 ++ 4w0):   mark_type_6;
+        transition select(hdr.metadata.type) {
+            2:   mark_type_2;
+            3:   mark_type_3;
+            6:   mark_type_6;
         }
     }
 
@@ -250,8 +256,7 @@ parser IngressParser(packet_in packet,
 
     state mark_type_0 {
         meta.transition_type = 0;
-        hdr.metadata.type_and_update = 0x00;
-        meta.new_type_and_update = 0x40;
+        hdr.metadata.type = 0;
         transition initialize_metadata;
     }
 
@@ -266,8 +271,7 @@ parser IngressParser(packet_in packet,
 
     state mark_type_1 {
         meta.transition_type = 1;
-        hdr.metadata.type_and_update = 0x10;
-        meta.new_type_and_update = 0x50;
+        hdr.metadata.type = 1;
         transition initialize_metadata;
     }
 
@@ -282,8 +286,7 @@ parser IngressParser(packet_in packet,
         hdr.metadata.wan_port = 0xffff;
         hdr.metadata.old_version = 0xff;
         hdr.metadata.new_version = 0xff;
-        hdr.metadata.zero2 = 0xff;
-        hdr.metadata.switch_time = 0xff;
+        hdr.metadata.main_flow_count = 0xff;
         hdr.metadata.checksum = 0xff;
         
         L3L4_t l3l4 = packet.lookahead<L3L4_t>();//这是为了“原地更新”
@@ -293,15 +296,11 @@ parser IngressParser(packet_in packet,
         hdr.metadata.dst_port = l3l4.dst_port;
         hdr.metadata.protocol = l3l4.protocol;
         
-        
-        //hdr.metadata.switch_time = ig_intr_md.ingress_mac_tstamp[SHARED_TIME_OFFSET+15:SHARED_TIME_OFFSET];
-        
         meta.id.src_addr = l3l4.src_addr;
         meta.id.dst_addr = l3l4.dst_addr;
         meta.id.src_port = l3l4.src_port;
         meta.id.dst_port = l3l4.dst_port;
         meta.id.protocol = l3l4.protocol;
-        
         
         transition parse_ipv4;
     }
@@ -344,7 +343,6 @@ control send_out(
         key = {
             meta.transition_type: ternary;
             meta.match: ternary;
-            meta.main_flow_timeout: ternary;
             hdr.ethernet.dst_addr: ternary;
             hdr.metadata.dst_addr: ternary;
             hdr.metadata.src_addr: ternary;
@@ -366,16 +364,10 @@ control send_out(
             hdr.ethernet.ether_type = TYPE_METADATA;
         }
 
-        if((meta.transition_type & 0b1110) == 0 && (meta.match == 0 || meta.main_flow_timeout == 1)) {
-            // mismatch 0/1
-            if(meta.main_flow_timeout == 1)
-                hdr.metadata.type_and_update = meta.new_type_and_update | 1;
-            else 
-                hdr.metadata.type_and_update = meta.new_type_and_update;
+        bit<8> new_type = hdr.metadata.type + 4;
+        if((meta.transition_type & 0b1110) == 0 && meta.match == 0) {
+            hdr.metadata.type = new_type;
         }
-        else if(meta.transition_type == 6) {
-            hdr.metadata.type_and_update[0:0] = meta.accept;
-        } 
     }
 }
 
@@ -633,7 +625,7 @@ control Ingress(
     // MAX_SIZE = 286720
     Register<time_t, flow_num_t>((bit<32>)SWITCH_FLOW_NUM, 0xf000) all_flow_timestamp;
                                                         /* a negative number */
-    Register<time_t, flow_num_t>((bit<32>)SWITCH_FLOW_NUM, 0xf000) main_flow_timestamp;
+    Register<counter_t, flow_num_t>((bit<32>)SWITCH_FLOW_NUM, 0) main_flow_counter;
 
     RegisterAction<version_t, flow_num_t, version_t>(version) reg_version_read = {
         void apply(inout version_t reg_version, out version_t ret) {
@@ -680,31 +672,16 @@ control Ingress(
         }
     };
 
-    RegisterAction<time_t, flow_num_t, void>(main_flow_timestamp) reg_force_update_mainflow_timeout = {
-        void apply(inout time_t reg_time) {
-            reg_time = meta.time;
-        } 
+    RegisterAction<counter_t, flow_num_t, counter_t>(main_flow_counter) reg_main_flow_counter_update = {
+        void apply(inout counter_t reg_cnt, out counter_t ret) {
+            reg_cnt = reg_cnt + 1;
+            ret = reg_cnt;
+        }
     };
 
-    RegisterAction<time_t, flow_num_t, bit<1>>(main_flow_timestamp) reg_read_mainflow_timeout = {
-        void apply(inout time_t reg_time, out bit<1> ret) {
-            if(meta.time - reg_time > AGING_TIME || meta.time - reg_time < 0) {
-                ret = 1;
-            }
-            else {
-                ret = 0;
-            }
-        } 
-    };
-    RegisterAction<time_t, flow_num_t, bit<1>>(main_flow_timestamp) reg_update_when_no_timeout = {
-        void apply(inout time_t reg_time, out bit<1> ret) {
-            if(meta.time - reg_time > AGING_TIME || meta.time - reg_time < 0) {
-                ret = 1;
-            }
-            else {
-                ret = 0;
-                reg_time = meta.time;
-            }
+    RegisterAction<counter_t, flow_num_t, counter_t>(main_flow_counter) reg_main_flow_counter_read = {
+        void apply(inout counter_t reg_cnt, out counter_t ret) {
+            ret = reg_cnt;
         }
     };
 
@@ -718,9 +695,7 @@ control Ingress(
         meta.src_dst_port = hdr.metadata.src_port ++ hdr.metadata.dst_port;
 
         if((meta.transition_type & 0b1110) == 0) {// 0/1
-            hdr.metadata.switch_time = meta.time; // This cannot be assigned in parser, so it is assigned here.
             hdr.metadata.zero1 = 0;
-            hdr.metadata.zero2 = 0;
             hdr.metadata.new_version = 0;
         }
 
@@ -787,7 +762,7 @@ control Ingress(
         }
 
         // stage 3,4,5,6
-        if(meta.ingress_end == false && (meta.transition_type != 6 ||meta.version == hdr.metadata.old_version)) {
+        if(meta.ingress_end == false && (meta.transition_type != 6 || meta.version == hdr.metadata.old_version)) {
             if(meta.index_hi == 0) kv0.apply(hdr, meta);
             else kv1.apply(hdr, meta);
             //else if(meta.index_hi == 2) kv2.apply(hdr, meta);
@@ -796,13 +771,12 @@ control Ingress(
         if(meta.ingress_end == false) {
             
             if(meta.transition_type == 6) {
-                if(meta.version != hdr.metadata.old_version) 
-                    meta.ingress_end = true; 
+                meta.ingress_end = true; 
 
                 if(meta.version == hdr.metadata.old_version || meta.version[3:0] == hdr.metadata.new_version[3:0]) 
-                    meta.accept = 1;
+                    hdr.metadata.main_flow_count = 1;// accept
                 else if(meta.version[3:0] == hdr.metadata.old_version[3:0])
-                    meta.accept = 0;
+                    hdr.metadata.main_flow_count = 0;// reject
                 else 
                     meta.transition_type = 7;
                 // 我想把version放在all_time后面
@@ -856,22 +830,17 @@ control Ingress(
                 meta.match = 0;
         }
         
-        meta.main_flow_timeout = 0;
         // stage 9
         // register main_flow_time
-        if(meta.ingress_end == false) {// for type 0/1/6
-            if(meta.need_match == 0) {
-                reg_force_update_mainflow_timeout.execute(hdr.metadata.index);
-            }
-            else if(meta.match == 1) {
-                meta.main_flow_timeout = reg_update_when_no_timeout.execute(hdr.metadata.index);
+        if(meta.ingress_end == false) {// for type 0/1
+            if(meta.match == 1) {
+                hdr.metadata.main_flow_count = reg_main_flow_counter_update.execute(hdr.metadata.index);
             }
             else {
-                meta.main_flow_timeout = reg_read_mainflow_timeout.execute(hdr.metadata.index);
+                hdr.metadata.main_flow_count = reg_main_flow_counter_read.execute(hdr.metadata.index);
             }
         }
    
-        // stage 10
         send_out.apply(hdr, meta, ig_intr_md, ig_intr_dprs_md, ig_intr_tm_md);
     }
 }
@@ -915,7 +884,7 @@ parser EgressParser(packet_in packet,
 
     state parse_metadata {
         packet.extract(hdr.metadata);
-        meta.transition_type = hdr.metadata.type_and_update[7:4];
+        meta.transition_type = hdr.metadata.type[3:0];
         transition parse_ipv4;
     }
 
@@ -1045,11 +1014,10 @@ control ComputeChecksum(inout headers hdr, in egress_metadata meta) {
 
                 hdr.metadata.old_version,
                 hdr.metadata.new_version,
-                hdr.metadata.type_and_update,
-                hdr.metadata.zero2,
+                hdr.metadata.type,
+                hdr.metadata.main_flow_count,
                 
-                hdr.metadata.index,
-                hdr.metadata.switch_time
+                hdr.metadata.index
                 }
             );
         }
