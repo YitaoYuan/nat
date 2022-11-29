@@ -26,6 +26,8 @@ def install_lb_set(vip, server_ip, table_size):
     global crc_poly1
     global crc_poly2
     assert((table_size & -table_size) == table_size) # table_size == 2**x
+    for ip in server_ip:
+        bfrt.lb.pipe.Egress.vip_table.add_with_get_vip(ip, vip)
     bfrt.lb.pipe.Ingress.lb_hash_mask_table.add_with_get_hash_mask(vip, table_size-1)
     bitmap = 0
     install_num = 0

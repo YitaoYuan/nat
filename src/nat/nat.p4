@@ -275,7 +275,16 @@ parser IngressParser(packet_in packet,
         hdr.metadata.setValid();
         meta.metadata_checksum_err = false;
 
-        
+        hdr.metadata.index = 0x1;//这个是为了在pipe内赋hash值时只赋值一部分
+
+        hdr.metadata.zero1 = 0xff;
+        hdr.metadata.wan_addr = 0xffffffff;
+        hdr.metadata.wan_port = 0xffff;
+        hdr.metadata.old_version = 0xff;
+        hdr.metadata.new_version = 0xff;
+        hdr.metadata.zero2 = 0xff;
+        hdr.metadata.switch_time = 0xff;
+        hdr.metadata.checksum = 0xff;
         
         L3L4_t l3l4 = packet.lookahead<L3L4_t>();//这是为了“原地更新”
         hdr.metadata.src_addr = l3l4.src_addr;
@@ -283,13 +292,8 @@ parser IngressParser(packet_in packet,
         hdr.metadata.src_port = l3l4.src_port;
         hdr.metadata.dst_port = l3l4.dst_port;
         hdr.metadata.protocol = l3l4.protocol;
-        hdr.metadata.zero1 = 0;
-
-        hdr.metadata.zero2 = 0;
-        hdr.metadata.index = 0;//这个是为了在pipe内赋hash值时只赋值一部分
-        hdr.metadata.new_version = 0;
-
-
+        
+        
         //hdr.metadata.switch_time = ig_intr_md.ingress_mac_tstamp[SHARED_TIME_OFFSET+15:SHARED_TIME_OFFSET];
         
         meta.id.src_addr = l3l4.src_addr;
@@ -627,9 +631,9 @@ control Ingress(
     Register<version_t, flow_num_t>((bit<32>)SWITCH_FLOW_NUM, 0) version;
 
     // MAX_SIZE = 286720
-    Register<time_t, flow_num_t>((bit<32>)SWITCH_FLOW_NUM, 0) all_flow_timestamp;
-
-    Register<time_t, flow_num_t>((bit<32>)SWITCH_FLOW_NUM, 0) main_flow_timestamp;
+    Register<time_t, flow_num_t>((bit<32>)SWITCH_FLOW_NUM, 0xf000) all_flow_timestamp;
+                                                        /* a negative number */
+    Register<time_t, flow_num_t>((bit<32>)SWITCH_FLOW_NUM, 0xf000) main_flow_timestamp;
 
     RegisterAction<version_t, flow_num_t, version_t>(version) reg_version_read = {
         void apply(inout version_t reg_version, out version_t ret) {
@@ -654,7 +658,7 @@ control Ingress(
 
     RegisterAction<time_t, flow_num_t, bit<1>>(all_flow_timestamp) reg_forward_update_all_flow_timestamp = {
         void apply(inout time_t reg_time, out bit<1> ret) {
-            if(meta.time - reg_time > AGING_TIME) {
+            if(meta.time - reg_time > AGING_TIME || meta.time - reg_time < 0) {
                 ret = 1;
             }
             else {
@@ -666,7 +670,7 @@ control Ingress(
 
     RegisterAction<time_t, flow_num_t, bit<1>>(all_flow_timestamp) reg_backward_update_all_flow_timestamp = {
         void apply(inout time_t reg_time, out bit<1> ret) {
-            if(meta.time - reg_time > AGING_TIME) {
+            if(meta.time - reg_time > AGING_TIME || meta.time - reg_time < 0) {
                 ret = 1;
             }
             else {
@@ -684,7 +688,7 @@ control Ingress(
 
     RegisterAction<time_t, flow_num_t, bit<1>>(main_flow_timestamp) reg_read_mainflow_timeout = {
         void apply(inout time_t reg_time, out bit<1> ret) {
-            if(meta.time - reg_time > AGING_TIME) {
+            if(meta.time - reg_time > AGING_TIME || meta.time - reg_time < 0) {
                 ret = 1;
             }
             else {
@@ -694,7 +698,7 @@ control Ingress(
     };
     RegisterAction<time_t, flow_num_t, bit<1>>(main_flow_timestamp) reg_update_when_no_timeout = {
         void apply(inout time_t reg_time, out bit<1> ret) {
-            if(meta.time - reg_time > AGING_TIME) {
+            if(meta.time - reg_time > AGING_TIME || meta.time - reg_time < 0) {
                 ret = 1;
             }
             else {
@@ -715,6 +719,9 @@ control Ingress(
 
         if((meta.transition_type & 0b1110) == 0) {// 0/1
             hdr.metadata.switch_time = meta.time; // This cannot be assigned in parser, so it is assigned here.
+            hdr.metadata.zero1 = 0;
+            hdr.metadata.zero2 = 0;
+            hdr.metadata.new_version = 0;
         }
 
 
@@ -966,6 +973,7 @@ control Egress(
             set_mac;
         }
         size = 64;
+        default_action = set_mac(48w0x0, 48w0xffffffffffff);
     }
 
     apply { 
