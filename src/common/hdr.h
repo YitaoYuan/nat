@@ -40,6 +40,6 @@ struct udp_t{
 union L4_header_t{
     tcp_t tcp;
     udp_t udp;
-};
+}__attribute__ ((__packed__));
 
 #endif

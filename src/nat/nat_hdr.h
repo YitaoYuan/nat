@@ -29,11 +29,9 @@ struct metadata_t{
     map_entry_t map;
     version_t   old_version;
     version_t   new_version;
-    u8          update : 4;
-    u8          type   : 4;
-    u8          zero2;
+    u8          type;
+    switch_counter_t  main_flow_count;
     flow_num_t  index;
-    switch_time_t    switch_time;
     checksum_t  checksum;
 }__attribute__ ((__packed__));
 
@@ -42,6 +40,6 @@ struct hdr_t{
     metadata_t metadata;
     ip_t ip;
     L4_header_t L4_header;
-};
+}__attribute__ ((__packed__));
 
 #endif

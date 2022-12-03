@@ -9,6 +9,7 @@ typedef unsigned int host_time_t;
 typedef unsigned short len_t;
 typedef unsigned short checksum_t;
 typedef unsigned char version_t;
+typedef unsigned char switch_counter_t;
 typedef unsigned char u8;
 typedef unsigned short u16;
 typedef unsigned int u32;

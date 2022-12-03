@@ -648,7 +648,7 @@ control Ingress(
         }
     };
 
-    RegisterAction<time_t, flow_num_t, bit<1>>(all_flow_timestamp) reg_forward_update_all_flow_timestamp = {
+    RegisterAction<time_t, flow_num_t, bit<1>>(all_flow_timestamp) reg_update_all_flow_timestamp = {
         void apply(inout time_t reg_time, out bit<1> ret) {
             if(meta.time - reg_time > AGING_TIME || meta.time - reg_time < 0) {
                 ret = 1;
@@ -657,18 +657,6 @@ control Ingress(
                 ret = 0;
             }
             reg_time = meta.time;
-        }
-    };
-
-    RegisterAction<time_t, flow_num_t, bit<1>>(all_flow_timestamp) reg_backward_update_all_flow_timestamp = {
-        void apply(inout time_t reg_time, out bit<1> ret) {
-            if(meta.time - reg_time > AGING_TIME || meta.time - reg_time < 0) {
-                ret = 1;
-            }
-            else {
-                ret = 0;
-                reg_time = meta.time;
-            }
         }
     };
 
@@ -719,9 +707,7 @@ control Ingress(
             meta.ingress_end = true;
         }
         else {
-            if(meta.transition_type == 2 || 
-                meta.transition_type == 3 ||
-                meta.transition_type == 8){ // 2/3
+            if(meta.transition_type == 2 || meta.transition_type == 8){
                 meta.ingress_end = true;
             }
             else {
@@ -734,11 +720,12 @@ control Ingress(
         meta.index_hi = hdr.metadata.index[SHARED_SWITCH_FLOW_NUM_LOG-1:SHARED_SWITCH_FLOW_NUM_PER_REG_LOG];
         
         if(meta.ingress_end == false) {
-            if(meta.transition_type == 0 || meta.transition_type == 6) {
-                meta.all_flow_timeout = reg_forward_update_all_flow_timestamp.execute(hdr.metadata.index);
+            if(meta.transition_type == 0 || meta.transition_type == 3 || meta.transition_type == 6) {
+                meta.all_flow_timeout = reg_update_all_flow_timestamp.execute(hdr.metadata.index);
             }
-            else if(meta.transition_type == 1) {// 1
-                meta.all_flow_timeout = reg_backward_update_all_flow_timestamp.execute(hdr.metadata.index);
+
+            if(meta.transition_type == 3) {
+                meta.ingress_end = true;
             }
         }
 
@@ -789,12 +776,13 @@ control Ingress(
             }
 
             // 副流超时时，禁止反向包的更新
-            
+            // 不能禁止，有可能是借的WAN端口
+            /*
             else if(meta.transition_type == 1 && meta.all_flow_timeout == 1) {
                 meta.transition_type = 7;
                 meta.ingress_end = true;
             }
-            
+            */
         }
         
         
@@ -975,20 +963,6 @@ control Egress(
 
             hdr.metadata.setInvalid();
             hdr.ethernet.ether_type = TYPE_IPV4;
-        }
-        else if((meta.transition_type & 0b1110) == 4) {// 4, 5
-            hdr.metadata.src_addr = hdr.ipv4.src_addr;
-            hdr.metadata.dst_addr = hdr.ipv4.dst_addr;
-            hdr.metadata.protocol = hdr.ipv4.protocol;
-        
-            if(meta.is_tcp) {
-                hdr.metadata.src_port = hdr.tcp.src_port;
-                hdr.metadata.dst_port = hdr.tcp.dst_port;
-            }
-            else {
-                hdr.metadata.src_port = hdr.udp.src_port;
-                hdr.metadata.dst_port = hdr.udp.dst_port;
-            }
         }
 
         mac_table.apply();
