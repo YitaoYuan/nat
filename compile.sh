@@ -35,8 +35,8 @@ fi
 if [ $TAIL == "cpp" ];
 then 
   create_dir $B_PATH
-  # WARNING: the checksum.hpp will cause BUG when use -O3
-  COMPILE_ARGS="-std=c++11 -lpcap -O2 -Wall -Wextra -Wshadow -Wno-unused -Wno-address-of-packed-member"
+  # Using "-fno-strict-aliasing" can avoid BUG in previous version, however the BUG is fixed.
+  COMPILE_ARGS="-std=c++11 -lpcap -O3 -Wall -Wextra -Wshadow -Wno-unused -Wno-address-of-packed-member"
   echo_r "g++ $P_PATH -o $B_PATH/$NAME ${COMPILE_ARGS} "
   exit 0
 fi

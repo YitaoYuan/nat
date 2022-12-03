@@ -55,7 +55,7 @@ const u16 TYPE_METADATA = SHARED_TYPE_METADATA;
 const u8 TCP_PROTOCOL = 0x06;
 const u8 UDP_PROTOCOL = 0x11;
 
-const u32 MAX_FRAME_SIZE = 1514;
+const u32 MAX_FRAME_SIZE = 1514 + sizeof(metadata_t);
 const size_t PACKET_WITH_META_LEN = sizeof(ethernet_t) + sizeof(metadata_t);
 const size_t MIN_IP_LEN = PACKET_WITH_META_LEN + sizeof(ip_t);
 const size_t MIN_UDP_LEN = MIN_IP_LEN + sizeof(udp_t);
@@ -732,6 +732,7 @@ host_time_t get_mytime()
 
 void pcap_handle(u_char *user, const struct pcap_pkthdr *h, const u_char *bytes)
 {
+    fprintf(stderr, "%d %d\n", (int)h->caplen, (int)h->len);
     //h->ts.tv_sec/tv_usec
     //h->caplen
     //h->len
