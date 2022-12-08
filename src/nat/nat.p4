@@ -758,21 +758,18 @@ control Ingress(
         if(meta.ingress_end == false) {
             
             if(meta.transition_type == 6) {
+                // afther "kv", hdr.metadata.old_version is useless, use it to store switch's version.
+                hdr.metadata.old_version = meta.version;
+                hdr.metadata.main_flow_count = 0;
                 meta.ingress_end = true; 
-
-                if(meta.version == hdr.metadata.old_version || meta.version[3:0] == hdr.metadata.new_version[3:0]) 
-                    hdr.metadata.main_flow_count = 1;// accept
-                else if(meta.version[3:0] == hdr.metadata.old_version[3:0])
-                    hdr.metadata.main_flow_count = 0;// reject
-                else 
-                    meta.transition_type = 7;
+                    
                 // 我想把version放在all_time后面
                 // version需要区分两种更新, 各占4位，key_version占高四位
                 // switch(reg_kv, reg_vv):
-                //      (old_kv, old_vv) : update & go down, send accept
-                //      (______, old_vv) : end, send reject
-                //      (______, new_vv) : end, send accept
-                //      (______, ______) : end, no response
+                //      (old_kv, old_vv) : send accept
+                //      (______, old_vv) : send reject
+                //      (______, new_vv) : send accept
+                //      (______, ______) : send out-of-date
             }
 
             // 副流超时时，禁止反向包的更新

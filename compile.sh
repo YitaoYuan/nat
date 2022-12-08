@@ -34,10 +34,13 @@ fi
 
 if [ $TAIL == "cpp" ];
 then 
+  PKGCONF="pkg-config"
+  CFLAGS="-std=c++11 -O3 $($PKGCONF --cflags libdpdk)"
+  LDFLAGS="$($PKGCONF --libs libdpdk)"
+  WARNFLAGS="-Wall -Wextra -Wshadow -Wno-unused"
   create_dir $B_PATH
   # Using "-fno-strict-aliasing" can avoid BUG in previous version, however the BUG is fixed.
-  COMPILE_ARGS="-std=c++11 -lpcap -O3 -Wall -Wextra -Wshadow -Wno-unused -Wno-address-of-packed-member"
-  echo_r "g++ $P_PATH -o $B_PATH/$NAME ${COMPILE_ARGS} "
+  echo_r "g++ $CFLAGS $WARNFLAGS $P_PATH -o $B_PATH/$NAME $LDFLAGS"
   exit 0
 fi
 
@@ -63,3 +66,7 @@ fi
 echo_r "make && make install"
 echo_i "Take up `cat $BFA_PATH | grep -c -E "stage.+ingress"` ingress stages"
 echo_i "Take up `cat $BFA_PATH | grep -c -E "stage.+egress"` egress stages"
+
+
+
+

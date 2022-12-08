@@ -27,7 +27,7 @@
 #define SHARED_NF_INNER_MAC_HI16 0x1070
 #define SHARED_NF_INNER_MAC_LO32 0xfd2fd421
 
-#define DEBUG 
+//#define DEBUG 
 //#define REJECT_TEST
 #define ONE_ENTRY_TEST
 //#define PATH_TEST
