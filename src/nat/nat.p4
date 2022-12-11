@@ -1,13 +1,4 @@
 /* -*- P4_16 -*- */
-
-/*
-1. 删除switch_time
-2. 将type_and_update和zero2变为type和update_count
-3. 删除new_type_and_update main_flow_timeout
-3. 需要增加一个python脚本测试更新失败的情况
-*/
-
-
 #if __TARGET_TOFINO__ == 2
 #include <t2na.p4>
 #else
@@ -66,12 +57,8 @@ header metadata_t {//32
     version_t   new_version;
     bit<8>      type;
     bit<8>      main_flow_count;
-    // 3 meanings:
-    // when type == 0/1, "update" is a hint for server 
-    // when type == 6 and the packet is from server, "update" must be 0
-    // when type == 6 and the packet is to server, it means if switch accept the update
-    flow_num_t  index; // index is the hash value of flow id
-    
+
+    flow_num_t  index;
     checksum_t  checksum;
 }
 
@@ -144,7 +131,6 @@ struct ingress_metadata {
     /* ingress */
     bool            ingress_end;
     bit<1>          all_flow_timeout;
-    bit<1>          accept;
 
     bit<32>         src_dst_port;
 
@@ -287,7 +273,7 @@ parser IngressParser(packet_in packet,
         hdr.metadata.old_version = 0xff;
         hdr.metadata.new_version = 0xff;
         hdr.metadata.main_flow_count = 0xff;
-        hdr.metadata.checksum = 0xff;
+        hdr.metadata.checksum = 0xffff;
         
         L3L4_t l3l4 = packet.lookahead<L3L4_t>();//这是为了“原地更新”
         hdr.metadata.src_addr = l3l4.src_addr;
@@ -381,118 +367,6 @@ control KV(
     Register<bit<8>, flow_num_t>((bit<32>)SWITCH_FLOW_NUM_PER_REG, 0) key0;
     Register<bit<32>, flow_num_t>((bit<32>)SWITCH_FLOW_NUM_PER_REG, 0) val1;
     Register<bit<16>, flow_num_t>((bit<32>)SWITCH_FLOW_NUM_PER_REG, 0) val0;
-
-    /*
-    RegisterAction<bit<32>, flow_num_t, bit<32>>(key3) reg_key3_read = {
-        void apply(inout bit<32> reg, out bit<32> ret) {
-            ret = reg;
-        }
-    };
-    RegisterAction<bit<32>, flow_num_t, bit<32>>(key2) reg_key2_read = {
-        void apply(inout bit<32> reg, out bit<32> ret) {
-            ret = reg;
-        }
-    };
-    RegisterAction<bit<32>, flow_num_t, bit<32>>(key1) reg_key1_read = {
-        void apply(inout bit<32> reg, out bit<32> ret) {
-            ret = reg;
-        }
-    };
-    RegisterAction<bit<8>, flow_num_t, bit<8>>(key0) reg_key0_read = {
-        void apply(inout bit<8> reg, out bit<8> ret) {
-            ret = reg;
-        }
-    };
-    RegisterAction<bit<32>, flow_num_t, bit<32>>(val1) reg_val1_read = {
-        void apply(inout bit<32> reg, out bit<32> ret) {
-            ret = reg;
-        }
-    };
-    RegisterAction<bit<16>, flow_num_t, bit<16>>(val0) reg_val0_read = {
-        void apply(inout bit<16> reg, out bit<16> ret) {
-            ret = reg;
-        }
-    };
-    RegisterAction<bit<32>, flow_num_t, void>(key3) reg_key3_write = {
-        void apply(inout bit<32> reg) {
-            reg = hdr.metadata.src_addr;
-        }
-    };
-    RegisterAction<bit<32>, flow_num_t, void>(key2) reg_key2_write = {
-        void apply(inout bit<32> reg) {
-            reg = hdr.metadata.dst_addr;
-        }
-    };
-    RegisterAction<bit<32>, flow_num_t, void>(key1) reg_key1_write = {
-        void apply(inout bit<32> reg) {
-            reg = hdr.metadata.src_port ++ hdr.metadata.dst_port;
-        }
-    };
-    RegisterAction<bit<8>, flow_num_t, void>(key0) reg_key0_write = {
-        void apply(inout bit<8> reg) {
-            reg = hdr.metadata.protocol;
-        }
-    };
-    RegisterAction<bit<32>, flow_num_t, void>(val1) reg_val1_write = {
-        void apply(inout bit<32> reg) {
-            reg = hdr.metadata.wan_addr;
-        }
-    };
-    RegisterAction<bit<16>, flow_num_t, void>(val0) reg_val0_write = {
-        void apply(inout bit<16> reg) {
-            reg = hdr.metadata.wan_port;
-        }
-    };
-
-    action key3_read(in flow_num_t index) {
-        hdr.metadata.src_addr = reg_key3_read.execute(index);
-    }
-
-    action key2_read(in flow_num_t index) {
-        hdr.metadata.dst_addr = reg_key2_read.execute(index);
-    }
-
-    action key1_read(in flow_num_t index) {
-        bit<32>tmp = reg_key1_read.execute(index);
-        hdr.metadata.src_port = tmp[31:16];
-        hdr.metadata.dst_port = tmp[15:0];
-    }
-
-    action key0_read(in flow_num_t index) {
-        hdr.metadata.protocol = reg_key0_read.execute(index);
-    }
-
-    action val1_read(in flow_num_t index) {
-        hdr.metadata.wan_addr = reg_val1_read.execute(index);
-    }
-
-    action val0_read(in flow_num_t index) {
-        hdr.metadata.wan_port= reg_val0_read.execute(index);
-    }
-    
-    action key3_write(in flow_num_t index) {
-        reg_key3_write.execute(index);
-    }
-
-    action key2_write(in flow_num_t index) {
-        reg_key2_write.execute(index);
-    }
-
-    action key1_write(in flow_num_t index) {
-        reg_key1_write.execute(index);
-    }
-
-    action key0_write(in flow_num_t index) {
-        reg_key0_write.execute(index);
-    }
-
-    action val1_write(in flow_num_t index) {
-        reg_val1_write.execute(index);
-    }
-
-    action val0_write(in flow_num_t index) {
-        reg_val0_write.execute(index);
-    }*/
 
     RegisterAction<bit<32>, flow_num_t, bit<32>>(key3) reg_key3_rw = {
         void apply(inout bit<32> reg, out bit<32> ret) {
@@ -648,7 +522,7 @@ control Ingress(
         }
     };
 
-    RegisterAction<time_t, flow_num_t, bit<1>>(all_flow_timestamp) reg_update_all_flow_timestamp = {
+    RegisterAction<time_t, flow_num_t, bit<1>>(all_flow_timestamp) reg_forward_update_all_flow_timestamp = {
         void apply(inout time_t reg_time, out bit<1> ret) {
             if(meta.time - reg_time > AGING_TIME || meta.time - reg_time < 0) {
                 ret = 1;
@@ -657,6 +531,18 @@ control Ingress(
                 ret = 0;
             }
             reg_time = meta.time;
+        }
+    };
+
+    RegisterAction<time_t, flow_num_t, bit<1>>(all_flow_timestamp) reg_backward_update_all_flow_timestamp = {
+        void apply(inout time_t reg_time, out bit<1> ret) {
+            if(meta.time - reg_time > AGING_TIME || meta.time - reg_time < 0) {
+                ret = 1;
+            }
+            else {
+                ret = 0;
+                reg_time = meta.time;
+            }
         }
     };
 
@@ -720,8 +606,11 @@ control Ingress(
         meta.index_hi = hdr.metadata.index[SHARED_SWITCH_FLOW_NUM_LOG-1:SHARED_SWITCH_FLOW_NUM_PER_REG_LOG];
         
         if(meta.ingress_end == false) {
-            if(meta.transition_type == 0 || meta.transition_type == 3 || meta.transition_type == 6) {
-                meta.all_flow_timeout = reg_update_all_flow_timestamp.execute(hdr.metadata.index);
+            if(meta.transition_type == 0 || meta.transition_type == 6) {
+                meta.all_flow_timeout = reg_forward_update_all_flow_timestamp.execute(hdr.metadata.index);
+            }
+            else if(meta.transition_type == 1 || meta.transition_type == 3) {
+                meta.all_flow_timeout = reg_backward_update_all_flow_timestamp.execute(hdr.metadata.index);
             }
 
             if(meta.transition_type == 3) {
@@ -758,7 +647,7 @@ control Ingress(
         if(meta.ingress_end == false) {
             
             if(meta.transition_type == 6) {
-                // afther "kv", hdr.metadata.old_version is useless, use it to store switch's version.
+                // after "kv", hdr.metadata.old_version is useless, use it to store switch's version.
                 hdr.metadata.old_version = meta.version;
                 hdr.metadata.main_flow_count = 0;
                 meta.ingress_end = true; 

@@ -13,6 +13,7 @@ typedef bit<32> flow_num_t;
 typedef bit<16> port_t;
 typedef bit<16> time_t;
 typedef bit<8> version_t;
+typedef bit<8> counter_t;
 typedef bit<16> checksum_t;
 typedef bit<SHARED_SWITCH_REG_NUM_LOG> index_hi_t;
 typedef bit<16> lb_hash_t;
@@ -50,19 +51,10 @@ header metadata_t {//32
 
     version_t   old_version;
     version_t   new_version;
-    bit<8>      type_and_update;
-    bit<8>      zero2;
+    bit<8>      type;
+    bit<8>      main_flow_count;
     
-    //port_t      wan_port;
     flow_num_t  index;
-    // 3 meanings:
-    // when type == 0/1, "update" is a hint for server 
-    // when type == 6 and the packet is from server, it means if the packet is a force update
-    // when type == 6 and the packet is to server, it means if switch accept the update
-     // index is the hash value of flow id
-
-    time_t      switch_time;// 因为一个ACK返回的时候wait_entry可能已经没了，所以时间需要记录在packet里
-    
     checksum_t  checksum;
 }
 
@@ -133,13 +125,8 @@ struct ingress_metadata {
     bit<4>          transition_type;    // 0:in->out/nf, 1:out->in/nf, 2:nf->out, 3:nf->in, 4:in->nf, 5:out->nf, 6:update, 7:drop
 
     /* ingress */
-    lb_hash_t       lb_hash;
-    lb_hash_t       lb_hash_mask;
     bool            ingress_end;
     bit<1>          all_flow_timeout;
-    bit<1>          main_flow_timeout;
-    //bit<8>          new_type_and_update;
-    bit<1>          accept;
 
     bit<32>         src_dst_port;
 
@@ -153,6 +140,9 @@ struct ingress_metadata {
     bit<1>          need_match;
 
     version_t       version;
+
+    lb_hash_t       lb_hash;
+    lb_hash_t       lb_hash_mask;
 }
 
 struct egress_metadata {
@@ -210,10 +200,10 @@ parser IngressParser(packet_in packet,
         packet.extract(hdr.metadata);
         metadata_csum.add(hdr.metadata);
         meta.metadata_checksum_err = metadata_csum.verify();
-        transition select(hdr.metadata.type_and_update) {
-            (4w2 ++ 4w0) &&& (4w15 ++ 4w0):   mark_type_2;
-            //(4w3 ++ 4w0) &&& (4w15 ++ 4w0):   mark_type_3;
-            (4w6 ++ 4w0) &&& (4w15 ++ 4w0):   mark_type_6;
+        transition select(hdr.metadata.type) {
+            2:   mark_type_2;
+            //3:   mark_type_3;
+            6:   mark_type_6;
         }
     }
 
@@ -235,7 +225,7 @@ parser IngressParser(packet_in packet,
     state mark_type_0 {
         ipv4_t ip = packet.lookahead<ipv4_t>();
         meta.transition_type = 0;
-        hdr.metadata.type_and_update = 0x00;
+        hdr.metadata.type = 0;
         transition select(ip.protocol ++ ip.ihl) {
             TCP_PROTOCOL ++ 4w5 :   initialize_metadata;
             UDP_PROTOCOL ++ 4w5 :   initialize_metadata;
@@ -246,7 +236,7 @@ parser IngressParser(packet_in packet,
     state mark_type_1 {
         ipv4_t ip = packet.lookahead<ipv4_t>();
         meta.transition_type = 1;
-        hdr.metadata.type_and_update = 0x10;
+        hdr.metadata.type = 1;
         transition select(ip.protocol ++ ip.ihl) {
             TCP_PROTOCOL ++ 4w5 :   initialize_metadata;
             UDP_PROTOCOL ++ 4w5 :   initialize_metadata;
@@ -261,11 +251,10 @@ parser IngressParser(packet_in packet,
         hdr.metadata.index = 0x1;//这个是为了在pipe内赋hash值时只赋值一部分
         
         hdr.metadata.zero1 = 0xff;
+        hdr.metadata.server_addr = 0xffffffff;
         hdr.metadata.old_version = 0xff;
         hdr.metadata.new_version = 0xff;
-        hdr.metadata.server_addr = 0xffffffff;
-        hdr.metadata.zero2 = 0xff;
-        hdr.metadata.switch_time = 0xffff;
+        hdr.metadata.main_flow_count = 0xff;
         hdr.metadata.checksum = 0xffff;
 
         L3L4_t l3l4 = packet.lookahead<L3L4_t>();
@@ -277,10 +266,10 @@ parser IngressParser(packet_in packet,
 
         meta.id.src_addr = l3l4.src_addr;
         meta.id.dst_addr = l3l4.dst_addr;
-        meta.id.protocol = l3l4.protocol;
         meta.id.src_port = l3l4.src_port;
         meta.id.dst_port = l3l4.dst_port;
-        
+        meta.id.protocol = l3l4.protocol;
+
         transition parse_ipv4;
     }
 
@@ -322,7 +311,6 @@ control send_out(
         key = {
             meta.transition_type: ternary;
             meta.match: ternary;
-            meta.main_flow_timeout: ternary;
             hdr.metadata.server_addr: ternary;
             hdr.metadata.dst_addr: ternary;// for type 1
         }
@@ -330,7 +318,7 @@ control send_out(
             set_egress_port;
             drop;
         }
-        size = 256;
+        size = 64;
         default_action = drop();
     }
 
@@ -340,16 +328,10 @@ control send_out(
 
         hdr.ethernet.ether_type = TYPE_METADATA;
 
-        if(meta.transition_type == 0 && (meta.match == 0 || meta.main_flow_timeout == 1)) {
-            // mismatch 0/1
-            if(meta.main_flow_timeout == 1)
-                hdr.metadata.type_and_update = 0x41;
-            else 
-                hdr.metadata.type_and_update = 0x40;
+        bit<8> new_type = hdr.metadata.type + 4;
+        if((meta.transition_type & 0b1110) == 0 && meta.match == 0) {
+            hdr.metadata.type = new_type;
         }
-        else if(meta.transition_type == 6) {
-            hdr.metadata.type_and_update[0:0] = meta.accept;
-        } 
     }
 }
 
@@ -362,119 +344,6 @@ control KV(
     Register<bit<32>, flow_num_t>((bit<32>)SWITCH_FLOW_NUM_PER_REG, 0) key1;
     Register<bit<8>, flow_num_t>((bit<32>)SWITCH_FLOW_NUM_PER_REG, 0) key0;
     Register<bit<32>, flow_num_t>((bit<32>)SWITCH_FLOW_NUM_PER_REG, 0) val1;
-    //Register<bit<16>, flow_num_t>((bit<32>)SWITCH_FLOW_NUM_PER_REG, 0) val0;
-
-    /*
-    RegisterAction<bit<32>, flow_num_t, bit<32>>(key3) reg_key3_read = {
-        void apply(inout bit<32> reg, out bit<32> ret) {
-            ret = reg;
-        }
-    };
-    RegisterAction<bit<32>, flow_num_t, bit<32>>(key2) reg_key2_read = {
-        void apply(inout bit<32> reg, out bit<32> ret) {
-            ret = reg;
-        }
-    };
-    RegisterAction<bit<32>, flow_num_t, bit<32>>(key1) reg_key1_read = {
-        void apply(inout bit<32> reg, out bit<32> ret) {
-            ret = reg;
-        }
-    };
-    RegisterAction<bit<8>, flow_num_t, bit<8>>(key0) reg_key0_read = {
-        void apply(inout bit<8> reg, out bit<8> ret) {
-            ret = reg;
-        }
-    };
-    RegisterAction<bit<32>, flow_num_t, bit<32>>(val1) reg_val1_read = {
-        void apply(inout bit<32> reg, out bit<32> ret) {
-            ret = reg;
-        }
-    };
-    RegisterAction<bit<16>, flow_num_t, bit<16>>(val0) reg_val0_read = {
-        void apply(inout bit<16> reg, out bit<16> ret) {
-            ret = reg;
-        }
-    };
-    RegisterAction<bit<32>, flow_num_t, void>(key3) reg_key3_write = {
-        void apply(inout bit<32> reg) {
-            reg = hdr.metadata.src_addr;
-        }
-    };
-    RegisterAction<bit<32>, flow_num_t, void>(key2) reg_key2_write = {
-        void apply(inout bit<32> reg) {
-            reg = hdr.metadata.dst_addr;
-        }
-    };
-    RegisterAction<bit<32>, flow_num_t, void>(key1) reg_key1_write = {
-        void apply(inout bit<32> reg) {
-            reg = hdr.metadata.src_port ++ hdr.metadata.dst_port;
-        }
-    };
-    RegisterAction<bit<8>, flow_num_t, void>(key0) reg_key0_write = {
-        void apply(inout bit<8> reg) {
-            reg = hdr.metadata.protocol;
-        }
-    };
-    RegisterAction<bit<32>, flow_num_t, void>(val1) reg_val1_write = {
-        void apply(inout bit<32> reg) {
-            reg = hdr.metadata.wan_addr;
-        }
-    };
-    RegisterAction<bit<16>, flow_num_t, void>(val0) reg_val0_write = {
-        void apply(inout bit<16> reg) {
-            reg = hdr.metadata.wan_port;
-        }
-    };
-
-    action key3_read(in flow_num_t index) {
-        hdr.metadata.src_addr = reg_key3_read.execute(index);
-    }
-
-    action key2_read(in flow_num_t index) {
-        hdr.metadata.dst_addr = reg_key2_read.execute(index);
-    }
-
-    action key1_read(in flow_num_t index) {
-        bit<32>tmp = reg_key1_read.execute(index);
-        hdr.metadata.src_port = tmp[31:16];
-        hdr.metadata.dst_port = tmp[15:0];
-    }
-
-    action key0_read(in flow_num_t index) {
-        hdr.metadata.protocol = reg_key0_read.execute(index);
-    }
-
-    action val1_read(in flow_num_t index) {
-        hdr.metadata.wan_addr = reg_val1_read.execute(index);
-    }
-
-    action val0_read(in flow_num_t index) {
-        hdr.metadata.wan_port= reg_val0_read.execute(index);
-    }
-    
-    action key3_write(in flow_num_t index) {
-        reg_key3_write.execute(index);
-    }
-
-    action key2_write(in flow_num_t index) {
-        reg_key2_write.execute(index);
-    }
-
-    action key1_write(in flow_num_t index) {
-        reg_key1_write.execute(index);
-    }
-
-    action key0_write(in flow_num_t index) {
-        reg_key0_write.execute(index);
-    }
-
-    action val1_write(in flow_num_t index) {
-        reg_val1_write.execute(index);
-    }
-
-    action val0_write(in flow_num_t index) {
-        reg_val0_write.execute(index);
-    }*/
 
     RegisterAction<bit<32>, flow_num_t, bit<32>>(key3) reg_key3_rw = {
         void apply(inout bit<32> reg, out bit<32> ret) {
@@ -516,14 +385,6 @@ control KV(
             ret = reg;
         }
     };
-    /*RegisterAction<bit<16>, flow_num_t, bit<16>>(val0) reg_val0_rw = {
-        void apply(inout bit<16> reg, out bit<16> ret) {
-            if(meta.transition_type == 6) {
-                reg = hdr.metadata.wan_port;
-            }
-            ret = reg;
-        }
-    };*/
 
     action key3_rw(in flow_num_t index) {
         hdr.metadata.src_addr = reg_key3_rw.execute(index);
@@ -547,46 +408,12 @@ control KV(
         hdr.metadata.server_addr = reg_val1_rw.execute(index);
     } 
 
-    /*action val0_rw(in flow_num_t index) {
-        hdr.metadata.wan_port = reg_val0_rw.execute(index);
-    } */
-
     apply {
         key3_rw(meta.index_lo);
         key2_rw(meta.index_lo);
         key1_rw(meta.index_lo);
         key0_rw(meta.index_lo);
         val1_rw(meta.index_lo);
-        //val0_rw(meta.index_lo);
-        
-        /*
-        // 不要像下面这样写，下面这样写会导致stage过多从而使编译器出错
-        // 尽管，编译器不会报错（坑爹），生成程序还是有问题，
-        // 传index时有概率(40%左右)会传给val1错误的index
-        if(meta.transition_type == 6) {
-            val1_write(meta.index_lo);
-            val0_write(meta.index_lo);
-        }
-        else{
-            val1_read(meta.index_lo);
-            val0_read(meta.index_lo);
-        }
-        if (meta.need_match == 0) {
-            key3_write(meta.index_lo);
-            key0_write(meta.index_lo);
-            key1_write(meta.index_lo);
-            key2_write(meta.index_lo);
-            
-        }
-        else{// 1 || (0 && alltimeout == 0)
-            key3_read(meta.index_lo);
-            key0_read(meta.index_lo);
-            key1_read(meta.index_lo);
-            key2_read(meta.index_lo);
-        }
-        */
-
-        // 对于LB，FireWall，FlowCounter，RateLimiter，下面对val的读写可以做定制
     }
 }
 
@@ -608,7 +435,7 @@ control Ingress(
     // MAX_SIZE = 286720
     Register<time_t, flow_num_t>((bit<32>)SWITCH_FLOW_NUM, 0xf000) all_flow_timestamp;
                                                         /* a negative number */
-    Register<time_t, flow_num_t>((bit<32>)SWITCH_FLOW_NUM, 0xf000) main_flow_timestamp;
+    Register<counter_t, flow_num_t>((bit<32>)SWITCH_FLOW_NUM, 0) main_flow_counter;
 
     RegisterAction<version_t, flow_num_t, version_t>(version) reg_version_read = {
         void apply(inout version_t reg_version, out version_t ret) {
@@ -655,31 +482,16 @@ control Ingress(
         }
     };
 
-    RegisterAction<time_t, flow_num_t, void>(main_flow_timestamp) reg_force_update_mainflow_timeout = {
-        void apply(inout time_t reg_time) {
-            reg_time = meta.time;
-        } 
+    RegisterAction<counter_t, flow_num_t, counter_t>(main_flow_counter) reg_main_flow_counter_update = {
+        void apply(inout counter_t reg_cnt, out counter_t ret) {
+            reg_cnt = reg_cnt + 1;
+            ret = reg_cnt;
+        }
     };
 
-    RegisterAction<time_t, flow_num_t, bit<1>>(main_flow_timestamp) reg_read_mainflow_timeout = {
-        void apply(inout time_t reg_time, out bit<1> ret) {
-            if(meta.time - reg_time > AGING_TIME || meta.time - reg_time < 0) {
-                ret = 1;
-            }
-            else {
-                ret = 0;
-            }
-        } 
-    };
-    RegisterAction<time_t, flow_num_t, bit<1>>(main_flow_timestamp) reg_update_when_no_timeout = {
-        void apply(inout time_t reg_time, out bit<1> ret) {
-            if(meta.time - reg_time > AGING_TIME || meta.time - reg_time < 0) {
-                ret = 1;
-            }
-            else {
-                ret = 0;
-                reg_time = meta.time;
-            }
+    RegisterAction<counter_t, flow_num_t, counter_t>(main_flow_counter) reg_main_flow_counter_read = {
+        void apply(inout counter_t reg_cnt, out counter_t ret) {
+            ret = reg_cnt;
         }
     };
 
@@ -724,9 +536,7 @@ control Ingress(
         meta.src_dst_port = hdr.metadata.src_port ++ hdr.metadata.dst_port;
 
         if((meta.transition_type & 0b1110) == 0) {// 0/1
-            hdr.metadata.switch_time = meta.time; // This cannot be assigned in parser, so it is assigned here.
             hdr.metadata.zero1 = 0;
-            hdr.metadata.zero2 = 0;
             hdr.metadata.new_version = 0;
         }
 
@@ -818,15 +628,11 @@ control Ingress(
         if(meta.ingress_end == false) {
             
             if(meta.transition_type == 6) {
-                if(meta.version != hdr.metadata.old_version) 
-                    meta.ingress_end = true; 
+                // after "kv", hdr.metadata.old_version is useless, use it to store switch's version.
+                hdr.metadata.old_version = meta.version;
+                hdr.metadata.main_flow_count = 0;
+                meta.ingress_end = true; 
 
-                if(meta.version == hdr.metadata.old_version || meta.version[3:0] == hdr.metadata.new_version[3:0]) 
-                    meta.accept = 1;
-                else if(meta.version[3:0] == hdr.metadata.old_version[3:0])
-                    meta.accept = 0;
-                else 
-                    meta.transition_type = 7;
                 // 我想把version放在all_time后面
                 // version需要区分两种更新, 各占4位，key_version占高四位
                 // switch(reg_kv, reg_vv):
@@ -835,14 +641,6 @@ control Ingress(
                 //      (______, new_vv) : end, send accept
                 //      (______, ______) : end, no response
             }
-
-            // 副流超时时，禁止反向包的更新
-            
-            /*else if(meta.transition_type == 1 && meta.all_flow_timeout == 1) {
-                meta.transition_type = 7;
-                meta.ingress_end = true;
-            }*/
-            
         }
 
         if(meta.need_match == 1) {
@@ -877,22 +675,17 @@ control Ingress(
         }    
         */
         
-        meta.main_flow_timeout = 0;
         // stage 8
         // register main_flow_time
-        if(meta.ingress_end == false) {// for type 0/6
-            if(meta.need_match == 0) {
-                reg_force_update_mainflow_timeout.execute(hdr.metadata.index);
-            }
-            else if(meta.match == 1) {
-                meta.main_flow_timeout = reg_update_when_no_timeout.execute(hdr.metadata.index);
+        if(meta.ingress_end == false) {// for type 0/1
+            if(meta.match == 1) {
+                hdr.metadata.main_flow_count = reg_main_flow_counter_update.execute(hdr.metadata.index);
             }
             else {
-                meta.main_flow_timeout = reg_read_mainflow_timeout.execute(hdr.metadata.index);
+                hdr.metadata.main_flow_count = reg_main_flow_counter_read.execute(hdr.metadata.index);
             }
         }
 
-        // stage 9
         send_out.apply(hdr, meta, ig_intr_md, ig_intr_dprs_md, ig_intr_tm_md);
     }
 }
@@ -936,7 +729,7 @@ parser EgressParser(packet_in packet,
 
     state parse_metadata {
         packet.extract(hdr.metadata);
-        meta.transition_type = hdr.metadata.type_and_update[7:4];
+        meta.transition_type = hdr.metadata.type[3:0];
         transition parse_ipv4;
     }
 
@@ -1042,20 +835,6 @@ control Egress(
             hdr.metadata.setInvalid();
             hdr.ethernet.ether_type = TYPE_IPV4;
         }
-        else if(meta.transition_type == 4) {// only 4
-            hdr.metadata.src_addr = hdr.ipv4.src_addr;
-            hdr.metadata.dst_addr = hdr.ipv4.dst_addr;
-            hdr.metadata.protocol = hdr.ipv4.protocol;
-        
-            if(meta.is_tcp) {
-                hdr.metadata.src_port = hdr.tcp.src_port;
-                hdr.metadata.dst_port = hdr.tcp.dst_port;
-            }
-            else {
-                hdr.metadata.src_port = hdr.udp.src_port;
-                hdr.metadata.dst_port = hdr.udp.dst_port;
-            }
-        }
 
         mac_table.apply();
     }
@@ -1075,18 +854,14 @@ control ComputeChecksum(inout headers hdr, in egress_metadata meta) {
                 hdr.metadata.protocol,
                 hdr.metadata.zero1,
 
+                hdr.metadata.server_addr,
+
                 hdr.metadata.old_version,
                 hdr.metadata.new_version,
+                hdr.metadata.type,
+                hdr.metadata.main_flow_count,
 
-                hdr.metadata.server_addr,
-                //hdr.metadata.wan_port,
-                hdr.metadata.index,
-                
-                hdr.metadata.type_and_update,
-                hdr.metadata.zero2,
-                
-                
-                hdr.metadata.switch_time
+                hdr.metadata.index
                 }
             );
         }

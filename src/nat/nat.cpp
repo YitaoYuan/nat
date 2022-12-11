@@ -1,6 +1,5 @@
 #include <cstdio>
 #include <cstring>
-#include <pcap/pcap.h>
 #include <time.h>
 #include <signal.h>
 #include <assert.h>
@@ -9,16 +8,30 @@
 #include <queue>
 #include <cstdlib>
 #include <arpa/inet.h>
+/* DPDK */
+#include <stdint.h>
+#include <inttypes.h>
+#include <rte_eal.h>
+#include <rte_ethdev.h>
+#include <rte_cycles.h>
+#include <rte_lcore.h>
+#include <rte_mbuf.h>
+#include "../common/process_buf.hpp"
 
+/* system utilities */
+#include "../common/sysutil.hpp"
+
+/* custom data structure */
+#include "shared_metadata.h"
 #include "../common/type.h"
+#include "nat_hdr.h"
 #include "../common/hash.hpp"
 #include "../common/list.hpp"
 #include "../common/checksum.hpp"
 #include "../common/heavy_hitter.hpp"
 
-#include "shared_metadata.h"
-#include "nat_hdr.h"
-
+/* program skeleton */
+#include "../common/dpdk_skeleton.hpp"
 
 
 #ifdef DEBUG
@@ -28,7 +41,6 @@
 #endif
 
 using std::unordered_map;
-using std::queue;
 using std::make_pair;
 using std::swap;
 using std::max;
@@ -99,13 +111,6 @@ flow_num_t get_index(const T &data)
 
 u8 SWITCH_INNER_MAC[6];
 u8 NF_INNER_MAC[6];
-
-
-pcap_t *device;
-// for regular packet
-u8 buf[MAX_FRAME_SIZE] __attribute__ ((aligned (64)));
-// for updating message
-u8 metadata_buf[sizeof(ethernet_t) + sizeof(metadata_t)] __attribute__ ((aligned (64)));
 /*
  * all bytes in these data structure are in network order
  */
@@ -121,7 +126,7 @@ wait_entry_t wait_set[SWITCH_FLOW_NUM];
 wait_entry_t wait_set_head;
 
 typedef unsigned short hh_cnt_t;
-heavy_hitter_t<hh_cnt_t, flow_entry_t*, 8, 512, SHARED_AGING_TIME_US/20> heavy_hitter[SWITCH_FLOW_NUM];
+heavy_hitter_t<hh_cnt_t, flow_entry_t*, 8, 4096, SHARED_AGING_TIME_US/10> heavy_hitter[SWITCH_FLOW_NUM];
 
 void heavy_hitter_count(flow_num_t id_index, flow_entry_t* entry, hh_cnt_t cnt, host_time_t timestamp)
 {
@@ -130,12 +135,18 @@ void heavy_hitter_count(flow_num_t id_index, flow_entry_t* entry, hh_cnt_t cnt, 
 
 flow_entry_t* heavy_hitter_get(flow_num_t id_index)
 {
-    if(heavy_hitter[id_index].size == 0)
+    if(heavy_hitter[id_index].size == 0) {
         return NULL;
+    }
+        
     flow_entry_t *entry = heavy_hitter[id_index].entry[0].id;
-    if(entry->type == list_type::inuse && entry->id_index_host == id_index)
+    if(entry->type == list_type::inuse && entry->id_index_host == id_index) {
+        for(size_t i = 0; i < heavy_hitter[id_index].size; i++) {
+            debug_printf("%d ", (int)heavy_hitter[id_index].entry[i].cnt);
+        }
+        debug_printf("\n");
         return entry;
-        // if this has timeout, it will be locked and will not be moved to list "avail"
+    }
     return NULL;
 }
 
@@ -194,8 +205,8 @@ void nf_init(host_time_t timestamp)
     
     assert(TOTAL_FLOW_NUM / port_num_per_addr < 128);
 
-    char *charmap = new char[SWITCH_FLOW_NUM];
-    memset(charmap, 0, SWITCH_FLOW_NUM);
+    char *charmap = (char*)calloc(SWITCH_FLOW_NUM, sizeof(char));
+
     int preload_num = 0;
 
     memset(sw_cnt, 0, sizeof(sw_cnt));
@@ -242,7 +253,7 @@ void nf_init(host_time_t timestamp)
     if(min_bucket_size * 2 < max_bucket_size) {
         printf("WARNING: Your data's distribution is too uneven.\n");
     }
-    delete [] charmap;
+    free(charmap);
 
     wait_set_head.l = wait_set_head.r = &wait_set_head;
 
@@ -250,17 +261,21 @@ void nf_init(host_time_t timestamp)
         heavy_hitter[i].init(timestamp);
 }
 
-void send_back(hdr_t * hdr, size_t len)
+void send_back(struct rte_mbuf *buf, queue_process_buf *queue)
 {
-    //debug_printf("send_back\n");
+    hdr_t *hdr = rte_pktmbuf_mtod(buf, hdr_t *);
     memcpy(hdr->ethernet.dst_addr, SWITCH_INNER_MAC, sizeof(hdr->ethernet.dst_addr));
     memcpy(hdr->ethernet.src_addr, NF_INNER_MAC, sizeof(hdr->ethernet.src_addr));
-    pcap_sendpacket(device, (u_char *)hdr, len);
+    queue->send(buf);
 }
 
-void send_update(flow_num_t index)
+void send_update(flow_num_t index, queue_process_buf *queue)
 {
-    hdr_t *hdr = (hdr_t *)metadata_buf;
+    struct rte_mbuf *buf = queue->alloc();
+    buf->data_len = sizeof(ethernet_t) + sizeof(metadata_t);
+    buf->pkt_len = buf->data_len;
+
+    hdr_t *hdr = rte_pktmbuf_mtod(buf, hdr_t *);
     // MAC address is useless between nf & switch
 
     hdr->metadata.map = wait_set[index].new_flow->map;
@@ -280,27 +295,25 @@ void send_update(flow_num_t index)
     hdr->metadata.checksum = sum.checksum();
 
     hdr->ethernet.ether_type = htons(TYPE_METADATA);
-    send_back(hdr, sizeof(hdr->ethernet) + sizeof(hdr->metadata));
 
     debug_printf("\nsend update\n");
-    //debug_printf("primary\n");
-    //print_map(wait_set[index].primary_map.id, ntohs(wait_set[index].primary_map.eport), index);
     debug_printf("old map:\n");
     print_map(wait_set[index].old_flow->map, index);
     debug_printf("new map:\n");
     print_map(wait_set[index].new_flow->map, index);
     
     debug_printf("version %x -> %x\n", hdr->metadata.old_version, hdr->metadata.new_version);
+
+    send_back(buf, queue);
 }
 
-void try_add_update(flow_num_t wait_set_index, metadata_t &metadata, host_time_t timestamp)
+void try_add_update(flow_num_t wait_set_index, metadata_t &metadata, host_time_t timestamp, queue_process_buf *queue)
 {
     if(!wait_set[wait_set_index].is_waiting && timestamp - wait_set[wait_set_index].last_req_time_host >= SWAP_TIME_US) {
+        
         flow_entry_t *new_entry = heavy_hitter_get(wait_set_index);
 
-        if(new_entry == NULL) {
-            return;
-        }
+        if(new_entry == NULL) return;
 
         assert(metadata.map.val.wan_port != 0);//If we have preload process, this is always true.
 
@@ -312,7 +325,7 @@ void try_add_update(flow_num_t wait_set_index, metadata_t &metadata, host_time_t
 
         wait_set[wait_set_index] = {new_entry, old_entry, 
 #ifdef REJECT_TEST
-                                    metadata.old_version ^ 0xAA, // make version mismatch
+                                    metadata.old_version ^ 0xA0, // make inplace version mismatch
 #else
                                     metadata.old_version, 
 #endif
@@ -324,11 +337,17 @@ void try_add_update(flow_num_t wait_set_index, metadata_t &metadata, host_time_t
         old_entry->is_waiting = 1;
 
         assert(old_entry->map.id.src_addr != 0);
-        bool ret = id_map.insert(make_pair(old_entry->map.id, old_entry)).second;
-        assert(ret);
+        auto ret = id_map.insert(make_pair(old_entry->map.id, old_entry));
+        if(!ret.second) {
+            fprintf(stderr, "(%x:%hu, %x:%hu, %d) already exists." ,
+                ntohl(old_entry->map.id.src_addr), ntohs(old_entry->map.id.src_port),
+                ntohl(old_entry->map.id.dst_addr), ntohs(old_entry->map.id.dst_port),
+                old_entry->map.id.protocol);
+        }
+        assert(ret.second);
 
         list_insert_before(&wait_set_head, &wait_set[wait_set_index]);// == push_back
-        send_update(wait_set_index);
+        send_update(wait_set_index, queue);
     }
 }
 
@@ -337,7 +356,7 @@ void update_sw_count(hdr_t * hdr, host_time_t timestamp)
     flow_num_t index_host = ntohl(hdr->metadata.index);
     if(sw_entry[index_host]->is_waiting) return;
     if(memcmp(&sw_entry[index_host]->map.val, &hdr->metadata.map.val, sizeof(flow_val_t)) != 0){
-        fprintf(stderr, "WARNING: switch's entry mismatch.\n");
+        print_map(hdr->metadata.map, index_host);
         return;
     }
 
@@ -350,15 +369,20 @@ void update_sw_count(hdr_t * hdr, host_time_t timestamp)
     heavy_hitter_count(index_host, sw_entry[index_host], diff, timestamp);
 }
 
-void forward_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
+void forward_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf *queue)
 {
+    hdr_t* hdr = rte_pktmbuf_mtod(buf, hdr_t*);
 // verify 
     bool is_tcp = hdr->ip.protocol == TCP_PROTOCOL;
-    if((is_tcp && packet_len < MIN_TCP_LEN) || (!is_tcp && packet_len < MIN_UDP_LEN))
-        return;
 
 // heavy_hitter for main_flow
     update_sw_count(hdr, timestamp);
+
+    if(!sw_entry[ntohl(hdr->metadata.index)]->is_waiting && memcmp(&sw_entry[ntohl(hdr->metadata.index)]->map.val, &hdr->metadata.map.val, sizeof(flow_val_t)) != 0) {
+        fprintf(stderr, "packet info out of date, drop.\n");
+        queue->drop(buf);
+        return;
+    } 
     
     flow_id_t flow_id = {hdr->ip.src_addr, hdr->ip.dst_addr, 
                         hdr->L4_header.udp.src_port, hdr->L4_header.udp.dst_port, // the same as tcp
@@ -386,7 +410,8 @@ void forward_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
         }
 
         if(list_empty(&avail_head[index_select])) {
-            fprintf(stderr, "Warning: Too full to allocate an entry for a new flow.\n");
+            fprintf(stderr, "Warning: Too full to allocate an entry for a new flow, drop.\n");
+            queue->drop(buf);
             return;// too full to allocate, drop
         }
         if(index_select != id_index_host) {
@@ -446,7 +471,7 @@ void forward_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
 
     metadata_t &metadata = hdr->metadata;
 // try add update
-    try_add_update(entry->id_index_host, metadata, timestamp);
+    try_add_update(entry->id_index_host, metadata, timestamp, queue);
 
 // modify flieds in metadata
     net_checksum_calculator metadata_sum;
@@ -469,24 +494,33 @@ void forward_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
             *(checksum_t*)(hdr->L4_header.udp.payload + 2));
 #endif
 // send back
-    send_back(hdr, packet_len);
+    send_back(buf, queue);
 }
 
-void backward_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
+void backward_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf *queue)
 {
+    hdr_t* hdr = rte_pktmbuf_mtod(buf, hdr_t*);
 // verify
     bool is_tcp = hdr->ip.protocol == TCP_PROTOCOL;
-    if((is_tcp && packet_len < MIN_TCP_LEN) || (!is_tcp && packet_len < MIN_UDP_LEN))
-        return;
+
 // heavy_hitter for main_flow
     update_sw_count(hdr, timestamp);
+
+    if(!sw_entry[ntohl(hdr->metadata.index)]->is_waiting && memcmp(&sw_entry[ntohl(hdr->metadata.index)]->map.val, &hdr->metadata.map.val, sizeof(flow_val_t)) != 0) {
+        fprintf(stderr, "packet info out of date, drop.\n");
+        queue->drop(buf);
+        return;
+    } 
 
     flow_id_t flow_id = {hdr->ip.src_addr, hdr->ip.dst_addr, 
                         hdr->L4_header.udp.src_port, hdr->L4_header.udp.dst_port, // the same as tcp
                         hdr->ip.protocol, (u8)0};
 
     auto val_map_it = val_map.find({flow_id.dst_addr, flow_id.dst_port});
-    if(val_map_it == val_map.end()) return;// no such WAN addr & port
+    if(val_map_it == val_map.end()) {
+        queue->drop(buf);
+        return;// no such WAN addr & port
+    }
 
     flow_entry_t *entry = val_map_it->second;
     if(!(entry->type == list_type::inuse || (entry->type == list_type::sw && entry->is_waiting))) return;
@@ -494,8 +528,11 @@ void backward_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
 // match
     if(entry->map.id.dst_addr != flow_id.src_addr || 
         entry->map.id.dst_port != flow_id.src_port ||
-        entry->map.id.protocol != flow_id.protocol)
+        entry->map.id.protocol != flow_id.protocol) {
+        queue->drop(buf);
         return; // drop on mismatch
+    }
+        
 
     assert(entry->val_index_host == ntohl(hdr->metadata.index));
     /*
@@ -542,7 +579,7 @@ void backward_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
     }
 
     metadata_t &metadata = hdr->metadata;
-    try_add_update(entry->val_index_host, metadata, timestamp);
+    try_add_update(entry->val_index_host, metadata, timestamp, queue);
 
 // modify flieds in metadata
     net_checksum_calculator metadata_sum;
@@ -569,23 +606,52 @@ void backward_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
 #endif
 
 // send back
-    send_back(hdr, packet_len);
+    send_back(buf, queue);
 }
 
-void ack_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
+void ack_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf *queue)
 {
+    hdr_t* hdr = rte_pktmbuf_mtod(buf, hdr_t*);
+
     metadata_t &metadata = hdr->metadata;
+
+    u8 nf_new_version = metadata.new_version;
+    u8 nf_old_version = (metadata.new_version & 0xf0) | ((metadata.new_version - 1) & 0x0f);
+    u8 switch_old_version = metadata.old_version;
+    const int reject_flag = 0;
+    const int accept_flag = 1;
+    int update_flag = -1;
+
+    if (switch_old_version == nf_old_version || ((switch_old_version & 0x0f) == (nf_new_version & 0x0f))) {
+        update_flag = accept_flag;
+    }
+    else if((switch_old_version & 0x0f) == (nf_old_version & 0x0f)) {
+        update_flag = reject_flag;
+    }
+    else {// out-of-date update
+        fprintf(stderr, "Detect an out-of-date update\n");
+        fprintf(stderr, "switch's version %2x, update's version %2x -> %2x\n", 
+            (u32)switch_old_version, 
+            (u32)nf_old_version, 
+            (u32)nf_new_version);
+        queue->drop(buf);
+        return;
+    }
 
     flow_num_t index = ntohl(metadata.index);
 
-    //debug_printf("2\n");
     wait_entry_t *wait_entry = &wait_set[index];
-    if(!wait_entry -> is_waiting) return; // Redundant ACK
-    //debug_printf("3\n");
+    if(!wait_entry -> is_waiting) {
+        queue->drop(buf);
+        fprintf(stderr, "Redundant ACK, drop.\n");
+        return; // Redundant ACK
+    }
     // mismatch
-    if(wait_entry->old_version != metadata.old_version) 
+    if(wait_entry->old_version != nf_old_version) {
+        queue->drop(buf);
+        fprintf(stderr, "wait_entry's version mismatch, drop.\n");
         return;
-    //debug_printf("4\n");
+    }
 
     flow_entry_t *entry_sw = wait_entry->old_flow;
     flow_entry_t *entry_nf = wait_entry->new_flow;
@@ -599,34 +665,39 @@ void ack_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
 
     list_erase(wait_entry);
 
-    if(!metadata.main_flow_count) {// reject
+    if(update_flag == reject_flag) {// reject
         auto erase_res = id_map.erase(entry_sw->map.id);
         assert(erase_res);
     }
-    else { // accept
+    else if(update_flag == accept_flag) { // accept
         entry_sw->type = list_type::inuse;
         entry_nf->type = list_type::sw;
 
         entry_sw->timestamp_host = timestamp;
 
-        list_move_to_back(&inuse_head, entry_sw);// sw->avail
-        list_move_to_back(&sw_head, entry_nf);// inuse->sw
+        list_move_to_back(&inuse_head, entry_sw);
+        list_move_to_back(&sw_head, entry_nf);
 
         auto erase_res = id_map.erase(entry_nf->map.id);
         assert(erase_res); 
 
         sw_entry[index] = entry_nf;
     }
-
-    debug_printf("\nreceive ACK (%s)\n", hdr->metadata.main_flow_count? "accept": "reject");
+    
+    debug_printf("\nreceive ACK (%s)\n", update_flag == accept_flag ? "accept": "reject");
     debug_printf("old map:\n");
     print_map(entry_sw->map, index);
     debug_printf("new map:\n");
     print_map(entry_nf->map, index);
-    debug_printf("old_version %x\n", wait_entry->old_version);
+    debug_printf("switch's version %2x, update's version %2x -> %2x\n", 
+            (u32)switch_old_version, 
+            (u32)nf_old_version, 
+            (u32)nf_new_version);
+    // don't forget this !!!
+    queue->drop(buf);
 }
 
-void do_aging(host_time_t timestamp)
+void nf_aging(host_time_t timestamp)
 {
     for(flow_entry_t *entry = inuse_head.r, *nxt; 
         entry != &inuse_head; entry = nxt) {
@@ -669,7 +740,7 @@ void report_wait_time_too_long()
     exit(0);
 }
 
-void update_wait_set(host_time_t timestamp)
+void nf_update(host_time_t timestamp, queue_process_buf *queue)
 {
     while(!list_empty(&wait_set_head))
     {
@@ -681,95 +752,59 @@ void update_wait_set(host_time_t timestamp)
 
         entry->last_req_time_host = timestamp;
 
-        send_update(entry->new_flow->id_index_host);// == (entry - &wait_set_head)
+        send_update(entry->new_flow->id_index_host, queue);// == (entry - &wait_set_head)
         list_move_to_back(&wait_set_head, entry);
     }
 }
 
-void nat_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
+void nf_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf *queue)
 {
-    do_aging(timestamp);
+    if(buf->pkt_len != buf->data_len) {queue->drop(buf); return;}
 
-    if(packet_len < PACKET_WITH_META_LEN) 
-        return;
+    if(buf->pkt_len < PACKET_WITH_META_LEN) {queue->drop(buf); return;}
+
+    hdr_t* hdr = rte_pktmbuf_mtod(buf, hdr_t*);
         
-    if(hdr->ethernet.ether_type != htons(TYPE_METADATA)) 
-        return;
+    if(hdr->ethernet.ether_type != htons(TYPE_METADATA)) {queue->drop(buf); return;}
     
     // only check checksum of header update
     net_checksum_calculator sum;
     sum.add(&hdr->metadata, sizeof(hdr->metadata));
     if(!sum.correct()) {
         fprintf(stderr, "Warning: Receive a packet with bad checksum, drop.\n");
+        queue->drop(buf); 
         return;
     }
     
     if(hdr->metadata.map.id.zero != 0) {
         fprintf(stderr, "Error: Zero field of packet has non-zero value.\n");
+        queue->drop(buf); 
         return;
     }
 
-    if(hdr->metadata.type != 6 && packet_len < MIN_IP_LEN)
-        return;
+    if(hdr->metadata.type != 6) {
+        if(buf->pkt_len < MIN_IP_LEN) {queue->drop(buf); return;}
+        else if(hdr->ip.protocol == TCP_PROTOCOL) {
+            if(buf->pkt_len < MIN_TCP_LEN) {queue->drop(buf); return;}
+        } 
+        else if(hdr->ip.protocol == UDP_PROTOCOL) {
+            if(buf->pkt_len < MIN_UDP_LEN) {queue->drop(buf); return;}
+        }
+        else {queue->drop(buf); return;}
+    }
     
-    if(ntohl(hdr->metadata.index) >= SWITCH_FLOW_NUM)
-        return;
+    if(ntohl(hdr->metadata.index) >= SWITCH_FLOW_NUM) {queue->drop(buf); return;}
 
     if(hdr->metadata.type == 6)
-        ack_process(timestamp, packet_len, hdr);
+        ack_process(timestamp, buf, queue);
     else if(hdr->metadata.type == 4) 
-        forward_process(timestamp, packet_len, hdr);
+        forward_process(timestamp, buf, queue);
     else if(hdr->metadata.type == 5) 
-        backward_process(timestamp, packet_len, (hdr_t *) hdr);
-}
-
-host_time_t get_mytime()
-{
-    timespec tm;
-    clock_gettime(CLOCK_MONOTONIC, &tm); // don't use pcap's clock
-    return (host_time_t)(tm.tv_sec*1000000ull+tm.tv_nsec/1000);
-}
-
-void pcap_handle(u_char *user, const struct pcap_pkthdr *h, const u_char *bytes)
-{
-    fprintf(stderr, "%d %d\n", (int)h->caplen, (int)h->len);
-    //h->ts.tv_sec/tv_usec
-    //h->caplen
-    //h->len
-    if(h->caplen != h->len) return;
-    memcpy(buf, bytes, h->len);
-
-    nat_process(get_mytime(), h->len, (hdr_t*)buf);
+        backward_process(timestamp, buf, queue);
 }
 
 int main(int argc, char **argv)
 {
-    assert((long long)buf % 64 == 0);
-    if(argc != 2) {
-        printf("Usage: nf ifname\n");
-        return 0;
-    }
-    char *dev_name = argv[1];
-    char errbuf[PCAP_ERRBUF_SIZE]; 
-    device = pcap_open_live(dev_name, MAX_FRAME_SIZE, 1, 1, errbuf);
-    
-    if(device == NULL) {
-        printf("cannot open device\n");
-        puts(errbuf);
-        return 0;
-    }
-
-    signal(SIGINT, stop);
-
-    nf_init(get_mytime());
-
-    pcap_setnonblock(device, 1, errbuf);
-    
-    while(1) {
-        pcap_dispatch(device, 16, pcap_handle, NULL);// process at most 4 packets
-
-        update_wait_set(get_mytime());
-    }
-    
+    dpdk_main(argc, argv);
     return 0;
 }

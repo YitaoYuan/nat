@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <cstring>
+#include <pcap/pcap.h>
 #include <time.h>
 #include <signal.h>
 #include <assert.h>
@@ -9,24 +10,16 @@
 #include <cstdlib>
 #include <arpa/inet.h>
 
-#include <stdint.h>
-#include <inttypes.h>
-#include <rte_eal.h>
-#include <rte_ethdev.h>
-#include <rte_cycles.h>
-#include <rte_lcore.h>
-#include <rte_mbuf.h>
-
-#include "shared_metadata.h"
-#include "nat_hdr.h"
-
-#include "../common/process_buf.hpp"
 #include "../common/type.h"
 #include "../common/hash.hpp"
 #include "../common/list.hpp"
 #include "../common/checksum.hpp"
 #include "../common/heavy_hitter.hpp"
-#include "../common/sysutil.hpp"
+
+#include "shared_metadata.h"
+#include "nat_hdr.h"
+
+
 
 #ifdef DEBUG
 #define debug_printf(...) fprintf(stderr, __VA_ARGS__)
@@ -106,6 +99,13 @@ flow_num_t get_index(const T &data)
 
 u8 SWITCH_INNER_MAC[6];
 u8 NF_INNER_MAC[6];
+
+
+pcap_t *device;
+// for regular packet
+u8 buf[MAX_FRAME_SIZE] __attribute__ ((aligned (64)));
+// for updating message
+u8 metadata_buf[sizeof(ethernet_t) + sizeof(metadata_t)] __attribute__ ((aligned (64)));
 /*
  * all bytes in these data structure are in network order
  */
@@ -121,7 +121,7 @@ wait_entry_t wait_set[SWITCH_FLOW_NUM];
 wait_entry_t wait_set_head;
 
 typedef unsigned short hh_cnt_t;
-heavy_hitter_t<hh_cnt_t, flow_entry_t*, 8, 4096, SHARED_AGING_TIME_US/10> heavy_hitter[SWITCH_FLOW_NUM];
+heavy_hitter_t<hh_cnt_t, flow_entry_t*, 8, 512, SHARED_AGING_TIME_US/20> heavy_hitter[SWITCH_FLOW_NUM];
 
 void heavy_hitter_count(flow_num_t id_index, flow_entry_t* entry, hh_cnt_t cnt, host_time_t timestamp)
 {
@@ -130,18 +130,12 @@ void heavy_hitter_count(flow_num_t id_index, flow_entry_t* entry, hh_cnt_t cnt, 
 
 flow_entry_t* heavy_hitter_get(flow_num_t id_index)
 {
-    if(heavy_hitter[id_index].size == 0) {
+    if(heavy_hitter[id_index].size == 0)
         return NULL;
-    }
-        
     flow_entry_t *entry = heavy_hitter[id_index].entry[0].id;
-    if(entry->type == list_type::inuse && entry->id_index_host == id_index) {
-        for(size_t i = 0; i < heavy_hitter[id_index].size; i++) {
-            debug_printf("%d ", (int)heavy_hitter[id_index].entry[i].cnt);
-        }
-        debug_printf("\n");
+    if(entry->type == list_type::inuse && entry->id_index_host == id_index)
         return entry;
-    }
+        // if this has timeout, it will be locked and will not be moved to list "avail"
     return NULL;
 }
 
@@ -200,8 +194,8 @@ void nf_init(host_time_t timestamp)
     
     assert(TOTAL_FLOW_NUM / port_num_per_addr < 128);
 
-    char *charmap = (char*)calloc(SWITCH_FLOW_NUM, sizeof(char));
-
+    char *charmap = new char[SWITCH_FLOW_NUM];
+    memset(charmap, 0, SWITCH_FLOW_NUM);
     int preload_num = 0;
 
     memset(sw_cnt, 0, sizeof(sw_cnt));
@@ -227,7 +221,7 @@ void nf_init(host_time_t timestamp)
         }
         else {
 #ifdef ONE_ENTRY_TEST
-            if(charmap[entry.val_index_host] == 5)
+            if(charmap[entry.val_index_host] == 3)
                 continue;
 #endif
             entry.type = list_type::avail;
@@ -248,7 +242,7 @@ void nf_init(host_time_t timestamp)
     if(min_bucket_size * 2 < max_bucket_size) {
         printf("WARNING: Your data's distribution is too uneven.\n");
     }
-    free(charmap);
+    delete [] charmap;
 
     wait_set_head.l = wait_set_head.r = &wait_set_head;
 
@@ -256,21 +250,17 @@ void nf_init(host_time_t timestamp)
         heavy_hitter[i].init(timestamp);
 }
 
-void send_back(struct rte_mbuf *buf, queue_process_buf *queue)
+void send_back(hdr_t * hdr, size_t len)
 {
-    hdr_t *hdr = rte_pktmbuf_mtod(buf, hdr_t *);
+    //debug_printf("send_back\n");
     memcpy(hdr->ethernet.dst_addr, SWITCH_INNER_MAC, sizeof(hdr->ethernet.dst_addr));
     memcpy(hdr->ethernet.src_addr, NF_INNER_MAC, sizeof(hdr->ethernet.src_addr));
-    queue->send(buf);
+    pcap_sendpacket(device, (u_char *)hdr, len);
 }
 
-void send_update(flow_num_t index, queue_process_buf *queue)
+void send_update(flow_num_t index)
 {
-    struct rte_mbuf *buf = queue->alloc();
-    buf->data_len = sizeof(ethernet_t) + sizeof(metadata_t);
-    buf->pkt_len = buf->data_len;
-
-    hdr_t *hdr = rte_pktmbuf_mtod(buf, hdr_t *);
+    hdr_t *hdr = (hdr_t *)metadata_buf;
     // MAC address is useless between nf & switch
 
     hdr->metadata.map = wait_set[index].new_flow->map;
@@ -290,25 +280,27 @@ void send_update(flow_num_t index, queue_process_buf *queue)
     hdr->metadata.checksum = sum.checksum();
 
     hdr->ethernet.ether_type = htons(TYPE_METADATA);
+    send_back(hdr, sizeof(hdr->ethernet) + sizeof(hdr->metadata));
 
     debug_printf("\nsend update\n");
+    //debug_printf("primary\n");
+    //print_map(wait_set[index].primary_map.id, ntohs(wait_set[index].primary_map.eport), index);
     debug_printf("old map:\n");
     print_map(wait_set[index].old_flow->map, index);
     debug_printf("new map:\n");
     print_map(wait_set[index].new_flow->map, index);
     
     debug_printf("version %x -> %x\n", hdr->metadata.old_version, hdr->metadata.new_version);
-
-    send_back(buf, queue);
 }
 
-void try_add_update(flow_num_t wait_set_index, metadata_t &metadata, host_time_t timestamp, queue_process_buf *queue)
+void try_add_update(flow_num_t wait_set_index, metadata_t &metadata, host_time_t timestamp)
 {
     if(!wait_set[wait_set_index].is_waiting && timestamp - wait_set[wait_set_index].last_req_time_host >= SWAP_TIME_US) {
-        
         flow_entry_t *new_entry = heavy_hitter_get(wait_set_index);
 
-        if(new_entry == NULL) return;
+        if(new_entry == NULL) {
+            return;
+        }
 
         assert(metadata.map.val.wan_port != 0);//If we have preload process, this is always true.
 
@@ -320,7 +312,7 @@ void try_add_update(flow_num_t wait_set_index, metadata_t &metadata, host_time_t
 
         wait_set[wait_set_index] = {new_entry, old_entry, 
 #ifdef REJECT_TEST
-                                    metadata.old_version ^ 0xA0, // make inplace version mismatch
+                                    metadata.old_version ^ 0xAA, // make version mismatch
 #else
                                     metadata.old_version, 
 #endif
@@ -332,17 +324,11 @@ void try_add_update(flow_num_t wait_set_index, metadata_t &metadata, host_time_t
         old_entry->is_waiting = 1;
 
         assert(old_entry->map.id.src_addr != 0);
-        auto ret = id_map.insert(make_pair(old_entry->map.id, old_entry));
-        if(!ret.second) {
-            fprintf(stderr, "(%x:%hu, %x:%hu, %d) already exists." ,
-                ntohl(old_entry->map.id.src_addr), ntohs(old_entry->map.id.src_port),
-                ntohl(old_entry->map.id.dst_addr), ntohs(old_entry->map.id.dst_port),
-                old_entry->map.id.protocol);
-        }
-        assert(ret.second);
+        bool ret = id_map.insert(make_pair(old_entry->map.id, old_entry)).second;
+        assert(ret);
 
         list_insert_before(&wait_set_head, &wait_set[wait_set_index]);// == push_back
-        send_update(wait_set_index, queue);
+        send_update(wait_set_index);
     }
 }
 
@@ -351,7 +337,7 @@ void update_sw_count(hdr_t * hdr, host_time_t timestamp)
     flow_num_t index_host = ntohl(hdr->metadata.index);
     if(sw_entry[index_host]->is_waiting) return;
     if(memcmp(&sw_entry[index_host]->map.val, &hdr->metadata.map.val, sizeof(flow_val_t)) != 0){
-        print_map(hdr->metadata.map, index_host);
+        fprintf(stderr, "WARNING: switch's entry mismatch.\n");
         return;
     }
 
@@ -364,20 +350,15 @@ void update_sw_count(hdr_t * hdr, host_time_t timestamp)
     heavy_hitter_count(index_host, sw_entry[index_host], diff, timestamp);
 }
 
-void forward_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf *queue)
+void forward_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
 {
-    hdr_t* hdr = rte_pktmbuf_mtod(buf, hdr_t*);
 // verify 
     bool is_tcp = hdr->ip.protocol == TCP_PROTOCOL;
+    if((is_tcp && packet_len < MIN_TCP_LEN) || (!is_tcp && packet_len < MIN_UDP_LEN))
+        return;
 
 // heavy_hitter for main_flow
     update_sw_count(hdr, timestamp);
-
-    if(!sw_entry[ntohl(hdr->metadata.index)]->is_waiting && memcmp(&sw_entry[ntohl(hdr->metadata.index)]->map.val, &hdr->metadata.map.val, sizeof(flow_val_t)) != 0) {
-        fprintf(stderr, "packet info out of date, drop.\n");
-        queue->drop(buf);
-        return;
-    } 
     
     flow_id_t flow_id = {hdr->ip.src_addr, hdr->ip.dst_addr, 
                         hdr->L4_header.udp.src_port, hdr->L4_header.udp.dst_port, // the same as tcp
@@ -405,8 +386,7 @@ void forward_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_
         }
 
         if(list_empty(&avail_head[index_select])) {
-            fprintf(stderr, "Warning: Too full to allocate an entry for a new flow, drop.\n");
-            queue->drop(buf);
+            fprintf(stderr, "Warning: Too full to allocate an entry for a new flow.\n");
             return;// too full to allocate, drop
         }
         if(index_select != id_index_host) {
@@ -466,7 +446,7 @@ void forward_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_
 
     metadata_t &metadata = hdr->metadata;
 // try add update
-    try_add_update(entry->id_index_host, metadata, timestamp, queue);
+    try_add_update(entry->id_index_host, metadata, timestamp);
 
 // modify flieds in metadata
     net_checksum_calculator metadata_sum;
@@ -489,33 +469,24 @@ void forward_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_
             *(checksum_t*)(hdr->L4_header.udp.payload + 2));
 #endif
 // send back
-    send_back(buf, queue);
+    send_back(hdr, packet_len);
 }
 
-void backward_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf *queue)
+void backward_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
 {
-    hdr_t* hdr = rte_pktmbuf_mtod(buf, hdr_t*);
 // verify
     bool is_tcp = hdr->ip.protocol == TCP_PROTOCOL;
-
+    if((is_tcp && packet_len < MIN_TCP_LEN) || (!is_tcp && packet_len < MIN_UDP_LEN))
+        return;
 // heavy_hitter for main_flow
     update_sw_count(hdr, timestamp);
-
-    if(!sw_entry[ntohl(hdr->metadata.index)]->is_waiting && memcmp(&sw_entry[ntohl(hdr->metadata.index)]->map.val, &hdr->metadata.map.val, sizeof(flow_val_t)) != 0) {
-        fprintf(stderr, "packet info out of date, drop.\n");
-        queue->drop(buf);
-        return;
-    } 
 
     flow_id_t flow_id = {hdr->ip.src_addr, hdr->ip.dst_addr, 
                         hdr->L4_header.udp.src_port, hdr->L4_header.udp.dst_port, // the same as tcp
                         hdr->ip.protocol, (u8)0};
 
     auto val_map_it = val_map.find({flow_id.dst_addr, flow_id.dst_port});
-    if(val_map_it == val_map.end()) {
-        queue->drop(buf);
-        return;// no such WAN addr & port
-    }
+    if(val_map_it == val_map.end()) return;// no such WAN addr & port
 
     flow_entry_t *entry = val_map_it->second;
     if(!(entry->type == list_type::inuse || (entry->type == list_type::sw && entry->is_waiting))) return;
@@ -523,11 +494,8 @@ void backward_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process
 // match
     if(entry->map.id.dst_addr != flow_id.src_addr || 
         entry->map.id.dst_port != flow_id.src_port ||
-        entry->map.id.protocol != flow_id.protocol) {
-        queue->drop(buf);
+        entry->map.id.protocol != flow_id.protocol)
         return; // drop on mismatch
-    }
-        
 
     assert(entry->val_index_host == ntohl(hdr->metadata.index));
     /*
@@ -574,7 +542,7 @@ void backward_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process
     }
 
     metadata_t &metadata = hdr->metadata;
-    try_add_update(entry->val_index_host, metadata, timestamp, queue);
+    try_add_update(entry->val_index_host, metadata, timestamp);
 
 // modify flieds in metadata
     net_checksum_calculator metadata_sum;
@@ -601,52 +569,23 @@ void backward_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process
 #endif
 
 // send back
-    send_back(buf, queue);
+    send_back(hdr, packet_len);
 }
 
-void ack_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf *queue)
+void ack_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
 {
-    hdr_t* hdr = rte_pktmbuf_mtod(buf, hdr_t*);
-
     metadata_t &metadata = hdr->metadata;
-
-    u8 nf_new_version = metadata.new_version;
-    u8 nf_old_version = (metadata.new_version & 0xf0) | ((metadata.new_version - 1) & 0x0f);
-    u8 switch_old_version = metadata.old_version;
-    const int reject_flag = 0;
-    const int accept_flag = 1;
-    int update_flag = -1;
-
-    if (switch_old_version == nf_old_version || ((switch_old_version & 0x0f) == (nf_new_version & 0x0f))) {
-        update_flag = accept_flag;
-    }
-    else if((switch_old_version & 0x0f) == (nf_old_version & 0x0f)) {
-        update_flag = reject_flag;
-    }
-    else {// out-of-date update
-        fprintf(stderr, "Detect an out-of-date update\n");
-        fprintf(stderr, "switch's version %2x, update's version %2x -> %2x\n", 
-            (u32)switch_old_version, 
-            (u32)nf_old_version, 
-            (u32)nf_new_version);
-        queue->drop(buf);
-        return;
-    }
 
     flow_num_t index = ntohl(metadata.index);
 
+    //debug_printf("2\n");
     wait_entry_t *wait_entry = &wait_set[index];
-    if(!wait_entry -> is_waiting) {
-        queue->drop(buf);
-        fprintf(stderr, "Redundant ACK, drop.\n");
-        return; // Redundant ACK
-    }
+    if(!wait_entry -> is_waiting) return; // Redundant ACK
+    //debug_printf("3\n");
     // mismatch
-    if(wait_entry->old_version != nf_old_version) {
-        queue->drop(buf);
-        fprintf(stderr, "wait_entry's version mismatch, drop.\n");
+    if(wait_entry->old_version != metadata.old_version) 
         return;
-    }
+    //debug_printf("4\n");
 
     flow_entry_t *entry_sw = wait_entry->old_flow;
     flow_entry_t *entry_nf = wait_entry->new_flow;
@@ -660,39 +599,34 @@ void ack_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf 
 
     list_erase(wait_entry);
 
-    if(update_flag == reject_flag) {// reject
+    if(!metadata.main_flow_count) {// reject
         auto erase_res = id_map.erase(entry_sw->map.id);
         assert(erase_res);
     }
-    else if(update_flag == accept_flag) { // accept
+    else { // accept
         entry_sw->type = list_type::inuse;
         entry_nf->type = list_type::sw;
 
         entry_sw->timestamp_host = timestamp;
 
-        list_move_to_back(&inuse_head, entry_sw);
-        list_move_to_back(&sw_head, entry_nf);
+        list_move_to_back(&inuse_head, entry_sw);// sw->avail
+        list_move_to_back(&sw_head, entry_nf);// inuse->sw
 
         auto erase_res = id_map.erase(entry_nf->map.id);
         assert(erase_res); 
 
         sw_entry[index] = entry_nf;
     }
-    
-    debug_printf("\nreceive ACK (%s)\n", update_flag == accept_flag ? "accept": "reject");
+
+    debug_printf("\nreceive ACK (%s)\n", hdr->metadata.main_flow_count? "accept": "reject");
     debug_printf("old map:\n");
     print_map(entry_sw->map, index);
     debug_printf("new map:\n");
     print_map(entry_nf->map, index);
-    debug_printf("switch's version %2x, update's version %2x -> %2x\n", 
-            (u32)switch_old_version, 
-            (u32)nf_old_version, 
-            (u32)nf_new_version);
-    // don't forget this !!!
-    queue->drop(buf);
+    debug_printf("old_version %x\n", wait_entry->old_version);
 }
 
-void nf_aging(host_time_t timestamp)
+void do_aging(host_time_t timestamp)
 {
     for(flow_entry_t *entry = inuse_head.r, *nxt; 
         entry != &inuse_head; entry = nxt) {
@@ -735,7 +669,7 @@ void report_wait_time_too_long()
     exit(0);
 }
 
-void nf_update_wait_set(host_time_t timestamp, queue_process_buf *queue)
+void update_wait_set(host_time_t timestamp)
 {
     while(!list_empty(&wait_set_head))
     {
@@ -747,258 +681,95 @@ void nf_update_wait_set(host_time_t timestamp, queue_process_buf *queue)
 
         entry->last_req_time_host = timestamp;
 
-        send_update(entry->new_flow->id_index_host, queue);// == (entry - &wait_set_head)
+        send_update(entry->new_flow->id_index_host);// == (entry - &wait_set_head)
         list_move_to_back(&wait_set_head, entry);
     }
 }
 
-void nf_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf *queue)
+void nat_process(host_time_t timestamp, len_t packet_len, hdr_t * hdr)
 {
-    if(buf->pkt_len != buf->data_len) {queue->drop(buf); return;}
+    do_aging(timestamp);
 
-    if(buf->pkt_len < PACKET_WITH_META_LEN) {queue->drop(buf); return;}
-
-    hdr_t* hdr = rte_pktmbuf_mtod(buf, hdr_t*);
+    if(packet_len < PACKET_WITH_META_LEN) 
+        return;
         
-    if(hdr->ethernet.ether_type != htons(TYPE_METADATA)) {queue->drop(buf); return;}
+    if(hdr->ethernet.ether_type != htons(TYPE_METADATA)) 
+        return;
     
     // only check checksum of header update
     net_checksum_calculator sum;
     sum.add(&hdr->metadata, sizeof(hdr->metadata));
     if(!sum.correct()) {
         fprintf(stderr, "Warning: Receive a packet with bad checksum, drop.\n");
-        queue->drop(buf); 
         return;
     }
     
     if(hdr->metadata.map.id.zero != 0) {
         fprintf(stderr, "Error: Zero field of packet has non-zero value.\n");
-        queue->drop(buf); 
         return;
     }
 
-    if(hdr->metadata.type != 6) {
-        if(buf->pkt_len < MIN_IP_LEN) {queue->drop(buf); return;}
-        else if(hdr->ip.protocol == TCP_PROTOCOL) {
-            if(buf->pkt_len < MIN_TCP_LEN) {queue->drop(buf); return;}
-        } 
-        else if(hdr->ip.protocol == UDP_PROTOCOL) {
-            if(buf->pkt_len < MIN_UDP_LEN) {queue->drop(buf); return;}
-        }
-        else {queue->drop(buf); return;}
-    }
+    if(hdr->metadata.type != 6 && packet_len < MIN_IP_LEN)
+        return;
     
-    if(ntohl(hdr->metadata.index) >= SWITCH_FLOW_NUM) {queue->drop(buf); return;}
+    if(ntohl(hdr->metadata.index) >= SWITCH_FLOW_NUM)
+        return;
 
     if(hdr->metadata.type == 6)
-        ack_process(timestamp, buf, queue);
+        ack_process(timestamp, packet_len, hdr);
     else if(hdr->metadata.type == 4) 
-        forward_process(timestamp, buf, queue);
+        forward_process(timestamp, packet_len, hdr);
     else if(hdr->metadata.type == 5) 
-        backward_process(timestamp, buf, queue);
+        backward_process(timestamp, packet_len, (hdr_t *) hdr);
 }
 
 host_time_t get_mytime()
 {
-    return (host_time_t)(rte_get_timer_cycles() / (rte_get_timer_hz() / 1000000));
+    timespec tm;
+    clock_gettime(CLOCK_MONOTONIC, &tm); // don't use pcap's clock
+    return (host_time_t)(tm.tv_sec*1000000ull+tm.tv_nsec/1000);
 }
 
-void
-lcore_main(uint16_t port, struct rte_mempool *mbuf_pool)
+void pcap_handle(u_char *user, const struct pcap_pkthdr *h, const u_char *bytes)
 {
-    if (rte_eth_dev_socket_id(port) >= 0 &&
-        rte_eth_dev_socket_id(port) != (int)rte_socket_id())
-            printf("WARNING, port %u is on remote NUMA node to "
-                    "polling thread.\n\tPerformance will "
-                    "not be optimal.\n", port);
-    printf("\nCore %u forwarding packets. [Ctrl+C to quit]\n",
-            rte_lcore_id());
+    fprintf(stderr, "%d %d\n", (int)h->caplen, (int)h->len);
+    //h->ts.tv_sec/tv_usec
+    //h->caplen
+    //h->len
+    if(h->caplen != h->len) return;
+    memcpy(buf, bytes, h->len);
 
-    queue_process_buf queue(mbuf_pool, port, 0, BURST_SIZE, BURST_SIZE * 2);
+    nat_process(get_mytime(), h->len, (hdr_t*)buf);
+}
+
+int main(int argc, char **argv)
+{
+    assert((long long)buf % 64 == 0);
+    if(argc != 2) {
+        printf("Usage: nf ifname\n");
+        return 0;
+    }
+    char *dev_name = argv[1];
+    char errbuf[PCAP_ERRBUF_SIZE]; 
+    device = pcap_open_live(dev_name, MAX_FRAME_SIZE, 1, 1, errbuf);
+    
+    if(device == NULL) {
+        printf("cannot open device\n");
+        puts(errbuf);
+        return 0;
+    }
+
+    signal(SIGINT, stop);
 
     nf_init(get_mytime());
 
-    while(true) {
-        nf_aging(get_mytime());
-        nf_update_wait_set(get_mytime(), &queue);
-
-        struct rte_mbuf *buf = queue.receive();
-        if(buf != NULL)
-            nf_process(get_mytime(), buf, &queue);
-
-        if(queue.total_rx_nb + queue.total_alloc_nb != queue.total_tx_nb + queue.total_drop_nb) {
-            fprintf(stderr, "rx: %u, tx: %u, drop: %u, alloc: %u\n", 
-                queue.total_rx_nb, queue.total_tx_nb, queue.total_drop_nb, queue.total_alloc_nb);
-            fprintf(stderr, "WARNING: total_rx_nb + total_alloc_nb != total_tx_nb + total_drop_nb. \n\
-Either some packets are not recycled or some external packets send/droped by this queue.\n\
-You can ignore this warning if you have cross-queue packets.\n");
-        }
-    }
-}
-/*
- * The main function, which does initialization and calls the per-lcore
- * functions.
- */
-//test -c 0x100000 -n 4 --socket-mem=0,8192 -d librte_mempool.so --huge-unlink --log-level=4
-// -c 设置应用使用的CPU集合，注意lcore和cpu不一定是一对一的，但通常是一对一的。
-// -n 内存通道数
-// --socket-mem 预分配的每个socket内存大小，逗号隔开
-// -d 加载额外驱动
-// --huge-unlink 创建大页文件后Unlink （暗指不支持多进程）
-// --log-level 日志级别
-
-#define RX_RING_SIZE 1024
-#define TX_RING_SIZE 1024
-#define NUM_MBUFS 8191
-#define MBUF_CACHE_SIZE 250
-#define BURST_SIZE 32
-static const struct rte_eth_conf port_conf_default = {
-    .rxmode = {
-        .max_rx_pkt_len = RTE_ETHER_MAX_LEN,
-    },
-};
-
-static inline int
-port_init(uint16_t port, struct rte_mempool *mbuf_pool)
-{
-    struct rte_eth_conf port_conf = port_conf_default;
-    const uint16_t rx_rings = 1, tx_rings = 1;
-    uint16_t nb_rxd = RX_RING_SIZE;
-    uint16_t nb_txd = TX_RING_SIZE;
-    int retval;
-    uint16_t q;
-    struct rte_eth_dev_info dev_info;
-    struct rte_eth_txconf txconf;
-    if (!rte_eth_dev_is_valid_port(port))
-        return -1;
-    retval = rte_eth_dev_info_get(port, &dev_info);
-    if (retval != 0) {
-        printf("Error during getting device (port %u) info: %s\n",
-                port, strerror(-retval));
-        return retval;
-    }
-    if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
-        port_conf.txmode.offloads |=
-            DEV_TX_OFFLOAD_MBUF_FAST_FREE;
-    /* Configure the Ethernet device. */
-    retval = rte_eth_dev_configure(port, rx_rings, tx_rings, &port_conf);
-    if (retval != 0)
-        return retval;
-    retval = rte_eth_dev_adjust_nb_rx_tx_desc(port, &nb_rxd, &nb_txd);
-    if (retval != 0)
-        return retval;
-    /* Allocate and set up 1 RX queue per Ethernet port. */
-    for (q = 0; q < rx_rings; q++) {
-        retval = rte_eth_rx_queue_setup(port, q, nb_rxd,
-                rte_eth_dev_socket_id(port), NULL, mbuf_pool);
-        if (retval < 0)
-            return retval;
-    }
-    txconf = dev_info.default_txconf;
-    txconf.offloads = port_conf.txmode.offloads;
-    /* Allocate and set up 1 TX queue per Ethernet port. */
-    for (q = 0; q < tx_rings; q++) {
-        retval = rte_eth_tx_queue_setup(port, q, nb_txd,
-                rte_eth_dev_socket_id(port), &txconf);
-        if (retval < 0)
-            return retval;
-    }
-    /* Start the Ethernet port. */
-    retval = rte_eth_dev_start(port);
-    if (retval < 0)
-        return retval;
-    /* Display the port MAC address. */
-    struct rte_ether_addr addr;
-    retval = rte_eth_macaddr_get(port, &addr);
-    if (retval != 0)
-        return retval;
-    printf("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
-               " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
-            port,
-            addr.addr_bytes[0], addr.addr_bytes[1],
-            addr.addr_bytes[2], addr.addr_bytes[3],
-            addr.addr_bytes[4], addr.addr_bytes[5]);
-    /* Enable RX in promiscuous mode for the Ethernet device. */
-    retval = rte_eth_promiscuous_enable(port);
-    if (retval != 0)
-        return retval;
-    return 0;
-}
-
-#define MY_RTE_ARG_LEN 256
-#define MY_RTE_ARG_NUM 32
-
-char rte_arg[MY_RTE_ARG_LEN];
-char *arg_tail = rte_arg;
-char static_arg[] = "-n 4 -d librte_mempool.so --huge-unlink";
-char *rte_argv[MY_RTE_ARG_NUM];
-
-void arg_append(const char *str)
-{
-    size_t len = strlen(str);
-    assert((arg_tail - rte_arg) + len < MY_RTE_ARG_LEN);
-    strcpy(arg_tail, str);
-    arg_tail += len;
-}
-
-void init(char *nic_name, uint16_t *portid, struct rte_mempool **mbuf_pool)
-{
-    // generate args
-    char *businfo;
-    int numanode, numanode_num;
-    char *cpu_list;
-    char *core_mask;
-    int nb_core = 1;
-    assert(nic_getbusinfo_by_name(nic_name, &businfo) == 0);
-    numanode = nic_getnumanode_by_businfo(businfo);
-    assert(!(numanode < 0));
-    assert(nic_getcpus_by_numa(numanode, &cpu_list) == 0);
-    assert(cpu_getmask(cpu_list, nb_core, &core_mask) == nb_core);
-
-    numanode_num = get_numanode_num();
-    assert(numanode_num > 0);
-
-    arg_append("test");
-    arg_append(" -c ");
-    arg_append(core_mask);
-    arg_append(" --socket-mem=");
-    for(int i = 0; i < numanode_num; i++) {
-        arg_append(i==numanode?"8192":"0");
-        arg_append(i==numanode_num-1?" ":",");
-    }
-    arg_append(static_arg);
-    printf("RTE args: %s\n", rte_arg);
+    pcap_setnonblock(device, 1, errbuf);
     
-    // split & install args
-    int rte_argc = 0;
-    for(char *arg = strtok(rte_arg, " "); arg != NULL; arg = strtok(NULL, " ")) {
-        rte_argv[rte_argc++] = arg;
-        assert(rte_argc < MY_RTE_ARG_NUM);
-    }
-    //printf("%d\n", rte_eal_init(rte_argc, rte_argv));
-    assert(rte_eal_init(rte_argc, rte_argv) == rte_argc - 1);
-    assert(rte_lcore_count() == 1);
+    while(1) {
+        pcap_dispatch(device, 16, pcap_handle, NULL);// process at most 4 packets
 
-    // mempool & port init
-    assert(!(rte_eth_dev_get_port_by_name(businfo, portid) < 0));
-    *mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL", NUM_MBUFS,
-        MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
-    assert(port_init(*portid, *mbuf_pool) == 0);
-}
-
-int
-main(int argc, char *argv[])
-{
-    if(argc != 2) {
-        printf("Usage: test <interface_name>\n");
-        return 0;
+        update_wait_set(get_mytime());
     }
-    char *ifname = argv[1];
-    uint16_t portid;
-    struct rte_mempool *mbuf_pool;
-    init(ifname, &portid, &mbuf_pool);
-    lcore_main(portid, mbuf_pool);
-    /* clean up the EAL */
-    rte_eal_cleanup();
+    
     return 0;
 }

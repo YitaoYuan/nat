@@ -4,8 +4,8 @@ worker_mac = [0x1070fd190095, 0x1070fd2fd851, 0x1070fd2fe441, 0x1070fd2fd421]
 worker_ip = [0xC0A80101, 0xC0A80102, 0xC0A80203, 0xC0A80104]
 worker_type = [1, 1, 0, 2] # 0: client, 1: server, 2: NF
 switch_mac = [0x020000000001, 0x020000000001, 0x020000000101, 0x020000000201]
-virtual_ip = 0xC0A802FE # only use one vip for test
-
+lb_sets = [(0xC0A802FE, [worker_ip[0], worker_ip[1]], 32)]
+#lb_sets = [(0xC0A802FE, [worker_ip[0]], 16), (0xC0A802FD, [worker_ip[1]], 64)]
 
 crc_poly1 = 0x04C11DB7
 crc_poly2 = 0x1EDC6F41
@@ -63,24 +63,21 @@ try:
     # smaller value means higher priority
     for i in range(worker_num):
         if worker_type[i] == 1: # to server, transition_type == 0/2
-            bfrt.lb.pipe.Ingress.send_out.forward_table.add_with_set_egress_port(0, 0xD, 1, 0x1, 0, 0x1, worker_ip[i], 0xffffffff, 0, 0x0, 1, worker_port[i])
+            bfrt.lb.pipe.Ingress.send_out.forward_table.add_with_set_egress_port(0, 0xD, 1, 0x1, worker_ip[i], 0xffffffff, 0, 0x0, 1, worker_port[i])
         if worker_type[i] == 0: # to client, transition_type == 1
-            bfrt.lb.pipe.Ingress.send_out.forward_table.add_with_set_egress_port(1, 0xF, 0, 0x0, 0, 0x0, 0, 0x0, worker_ip[i], 0xffffffff, 1, worker_port[i])
+            bfrt.lb.pipe.Ingress.send_out.forward_table.add_with_set_egress_port(1, 0xF, 0, 0x0, 0, 0x0, worker_ip[i], 0xffffffff, 1, worker_port[i])
         if worker_type[i] == 2: # transition_type == 0/1/6 (0,1 is mismatch)
-            bfrt.lb.pipe.Ingress.send_out.forward_table.add_with_set_egress_port(0, 0x0, 0, 0x0, 0, 0x0, 0, 0x0, 0, 0x0, 2, worker_port[i])
+            bfrt.lb.pipe.Ingress.send_out.forward_table.add_with_set_egress_port(0, 0x0, 0, 0x0, 0, 0x0, 0, 0x0, 2, worker_port[i])
     # transition_type == 7
-    bfrt.lb.pipe.Ingress.send_out.forward_table.add_with_drop(7, 0xF, 0, 0x0, 0, 0x0, 0, 0x0, 0, 0x0, 0, 0x0, 1)
+    bfrt.lb.pipe.Ingress.send_out.forward_table.add_with_drop(7, 0xF, 0, 0x0, 0, 0x0, 0, 0x0, 1)
 except:
     print("Cannot load forward_table.")
 
 try:
     # Althogh our code support multiple load-balance set,
     # we only use one set for test.
-    server_ip = []
-    for i in range(worker_num):
-        if worker_type[i] == 1:
-            server_ip.append(worker_ip[i])
-    install_lb_set(virtual_ip, server_ip, 32)
+    for vip, server_ip, table_size in lb_sets:
+        install_lb_set(vip, server_ip, table_size)
 except:
     print("Cannot load load-balance table.")
 
