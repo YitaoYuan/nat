@@ -67,7 +67,6 @@ const u16 TYPE_METADATA = SHARED_TYPE_METADATA;
 const u8 TCP_PROTOCOL = 0x06;
 const u8 UDP_PROTOCOL = 0x11;
 
-const u32 MAX_FRAME_SIZE = 1514 + sizeof(metadata_t);
 const size_t PACKET_WITH_META_LEN = sizeof(ethernet_t) + sizeof(metadata_t);
 const size_t MIN_IP_LEN = PACKET_WITH_META_LEN + sizeof(ip_t);
 const size_t MIN_UDP_LEN = MIN_IP_LEN + sizeof(udp_t);
@@ -93,7 +92,7 @@ struct flow_entry_t{
 
 struct wait_entry_t{
     flow_entry_t *new_flow;
-    flow_entry_t *old_flow;// we don't care old_flow->id
+    flow_entry_t *old_flow;
     version_t old_version;// net (u8 is the same)
     host_time_t first_req_time_host;
     host_time_t last_req_time_host;// host
@@ -104,7 +103,7 @@ struct wait_entry_t{
 template<typename T>
 flow_num_t get_index(const T &data)
 {
-    my_hash<T> hasher;
+    my_hash<T, SHARED_SWITCH_CRC_POLY> hasher;
     return hasher(data) % SWITCH_FLOW_NUM;
 }
 
@@ -114,8 +113,8 @@ u8 NF_INNER_MAC[6];
 /*
  * all bytes in these data structure are in network order
  */
-unordered_map<flow_id_t, flow_entry_t*, my_hash<flow_id_t>, mem_equal<flow_id_t> >id_map;
-unordered_map<flow_val_t, flow_entry_t*, my_hash<flow_val_t>, mem_equal<flow_val_t> >val_map;
+unordered_map<flow_id_t, flow_entry_t*, my_hash<flow_id_t, SHARED_SWITCH_CRC_POLY>, mem_equal<flow_id_t> >id_map;
+unordered_map<flow_val_t, flow_entry_t*, my_hash<flow_val_t, SHARED_SWITCH_CRC_POLY>, mem_equal<flow_val_t> >val_map;
 
 flow_entry_t inuse_head, sw_head, avail_head[SWITCH_FLOW_NUM];
 flow_entry_t flow_entry[TOTAL_FLOW_NUM];
@@ -294,8 +293,6 @@ void send_update(flow_num_t index, queue_process_buf *queue)
     
     hdr->metadata.checksum = sum.checksum();
 
-    hdr->ethernet.ether_type = htons(TYPE_METADATA);
-
     debug_printf("\nsend update\n");
     debug_printf("old map:\n");
     print_map(wait_set[index].old_flow->map, index);
@@ -317,7 +314,7 @@ void try_add_update(flow_num_t wait_set_index, metadata_t &metadata, host_time_t
 
         assert(metadata.map.val.wan_port != 0);//If we have preload process, this is always true.
 
-        auto val_map_it = val_map.find({metadata.map.val.wan_addr, metadata.map.val.wan_port});
+        auto val_map_it = val_map.find((flow_val_t){metadata.map.val.wan_addr, metadata.map.val.wan_port});
         assert(val_map_it != val_map.end());
 
         flow_entry_t *old_entry = val_map_it->second;
@@ -339,12 +336,12 @@ void try_add_update(flow_num_t wait_set_index, metadata_t &metadata, host_time_t
         assert(old_entry->map.id.src_addr != 0);
         auto ret = id_map.insert(make_pair(old_entry->map.id, old_entry));
         if(!ret.second) {
-            fprintf(stderr, "(%x:%hu, %x:%hu, %d) already exists." ,
+            fprintf(stderr, "WARNING: (%x:%hu, %x:%hu, %d) already exists." ,
                 ntohl(old_entry->map.id.src_addr), ntohs(old_entry->map.id.src_port),
                 ntohl(old_entry->map.id.dst_addr), ntohs(old_entry->map.id.dst_port),
                 old_entry->map.id.protocol);
         }
-        assert(ret.second);
+        //assert(ret.second);
 
         list_insert_before(&wait_set_head, &wait_set[wait_set_index]);// == push_back
         send_update(wait_set_index, queue);
@@ -379,6 +376,7 @@ void forward_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_
     update_sw_count(hdr, timestamp);
 
     if(!sw_entry[ntohl(hdr->metadata.index)]->is_waiting && memcmp(&sw_entry[ntohl(hdr->metadata.index)]->map.val, &hdr->metadata.map.val, sizeof(flow_val_t)) != 0) {
+        // 也可以对比version[3:0]而不是val
         fprintf(stderr, "packet info out of date, drop.\n");
         queue->drop(buf);
         return;

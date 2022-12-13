@@ -24,8 +24,9 @@
 #define SHARED_NF_INNER_MAC_HI16 0x1070
 #define SHARED_NF_INNER_MAC_LO32 0xfd2fd421
 
+#define SHARED_SWITCH_CRC_POLY 0x04C11DB7
 
-//#define DEBUG 
+#define DEBUG 
 
 #define ONE_ENTRY_TEST
 //#define PATH_TEST

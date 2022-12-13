@@ -1,5 +1,5 @@
-#ifndef __NAT_HDR_H__
-#define __NAT_HDR_H__
+#ifndef __LB_HDR_H__
+#define __LB_HDR_H__
 
 #include "../common/hdr.h"
 
@@ -13,8 +13,7 @@ struct flow_id_t{
 }__attribute__ ((__packed__));
 
 struct flow_val_t{
-    ip_addr_t wan_addr;
-    port_t wan_port;
+    ip_addr_t server_addr;
 }__attribute__ ((__packed__));
 
 struct map_entry_t{
@@ -24,6 +23,7 @@ struct map_entry_t{
 
 struct metadata_t{
     map_entry_t map;
+    ip_addr_t   hash_addr;
     version_t   old_version;
     version_t   new_version;
     u8          type;

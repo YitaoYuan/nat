@@ -70,6 +70,7 @@ try:
             bfrt.lb.pipe.Ingress.send_out.forward_table.add_with_set_egress_port(0, 0x0, 0, 0x0, 0, 0x0, 0, 0x0, 2, worker_port[i])
     # transition_type == 7
     bfrt.lb.pipe.Ingress.send_out.forward_table.add_with_drop(7, 0xF, 0, 0x0, 0, 0x0, 0, 0x0, 1)
+    # bfrt.lb.pipe.Ingress.send_out.forward_table.add_with_set_egress_port(6, 0xF, 0, 0x0, 0, 0x0, 0, 0x0, 1, worker_port[2])
 except:
     print("Cannot load forward_table.")
 

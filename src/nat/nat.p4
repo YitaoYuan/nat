@@ -490,7 +490,7 @@ control Ingress(
         inout ingress_intrinsic_metadata_for_deparser_t ig_intr_dprs_md,
         inout ingress_intrinsic_metadata_for_tm_t ig_intr_tm_md) {
 
-    CRCPolynomial<bit<32>>(32w0x04C11DB7, false, false, false, 32w0, 32w0) polynomial;
+    CRCPolynomial<bit<32>>((bit<32>)SHARED_SWITCH_CRC_POLY, false, false, false, 32w0, 32w0) polynomial;
     Hash<bit<SHARED_SWITCH_FLOW_NUM_LOG>>(HashAlgorithm_t.CUSTOM, polynomial) hashmap0;
     Hash<bit<SHARED_SWITCH_FLOW_NUM_LOG>>(HashAlgorithm_t.CUSTOM, polynomial) hashmap1;
     
@@ -759,7 +759,10 @@ parser EgressParser(packet_in packet,
     state parse_metadata {
         packet.extract(hdr.metadata);
         meta.transition_type = hdr.metadata.type[3:0];
-        transition parse_ipv4;
+        transition select(meta.transition_type) {
+            6 : accept;
+            default : parse_ipv4;
+        }
     }
 
     state parse_ipv4 {

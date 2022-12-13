@@ -48,6 +48,7 @@ header metadata_t {//32
     bit<8>      zero1;
 
     ip4_addr_t  server_addr;
+    ip4_addr_t  hash_addr;
 
     version_t   old_version;
     version_t   new_version;
@@ -252,6 +253,7 @@ parser IngressParser(packet_in packet,
         
         hdr.metadata.zero1 = 0xff;
         hdr.metadata.server_addr = 0xffffffff;
+        hdr.metadata.hash_addr = 0xffffffff;
         hdr.metadata.old_version = 0xff;
         hdr.metadata.new_version = 0xff;
         hdr.metadata.main_flow_count = 0xff;
@@ -425,7 +427,7 @@ control Ingress(
         inout ingress_intrinsic_metadata_for_deparser_t ig_intr_dprs_md,
         inout ingress_intrinsic_metadata_for_tm_t ig_intr_tm_md) {
 
-    CRCPolynomial<bit<32>>(32w0x04C11DB7, false, false, false, 32w0, 32w0) polynomial;
+    CRCPolynomial<bit<32>>((bit<32>)SHARED_SWITCH_CRC_POLY, false, false, false, 32w0, 32w0) polynomial;
     Hash<bit<SHARED_SWITCH_FLOW_NUM_LOG>>(HashAlgorithm_t.CUSTOM, polynomial) hashmap0;
     Hash<bit<SHARED_SWITCH_FLOW_NUM_LOG>>(HashAlgorithm_t.CUSTOM, polynomial) hashmap1;
     Hash<lb_hash_t>(HashAlgorithm_t.CUSTOM, polynomial) lb_hashmap;
@@ -517,6 +519,7 @@ control Ingress(
 
     action get_server_addr(ip4_addr_t server_addr) {
         hdr.metadata.server_addr = server_addr;
+        hdr.metadata.hash_addr = server_addr;
     }
 
     table lb_table{// support multiple load-balance set
@@ -600,7 +603,9 @@ control Ingress(
         meta.match = 1;
 
         // stage 2
-        lb_table.apply();
+        if(meta.transition_type == 0) {
+            lb_table.apply();
+        }
 
         if(meta.ingress_end == false) {// 0/6
             if(meta.transition_type == 0 && meta.all_flow_timeout == 1) {
@@ -723,14 +728,16 @@ parser EgressParser(packet_in packet,
         packet.extract(hdr.ethernet);
         transition select(hdr.ethernet.ether_type) {
             TYPE_METADATA   :   parse_metadata;
-            default         :   accept;
         }
     }
 
     state parse_metadata {
         packet.extract(hdr.metadata);
         meta.transition_type = hdr.metadata.type[3:0];
-        transition parse_ipv4;
+        transition select(meta.transition_type) {
+            6 : accept;
+            default : parse_ipv4;
+        }
     }
 
     state parse_ipv4 {
@@ -855,6 +862,7 @@ control ComputeChecksum(inout headers hdr, in egress_metadata meta) {
                 hdr.metadata.zero1,
 
                 hdr.metadata.server_addr,
+                hdr.metadata.hash_addr,
 
                 hdr.metadata.old_version,
                 hdr.metadata.new_version,
