@@ -15,7 +15,7 @@ set -e
 
 if [ $# -ne 2 ];
 then 
-	echo_e "Usage: compile_p4.sh <PROGRAM_PATH> <BUILD_DIR_PATH>"
+	echo_e "Usage: compile.sh <PROGRAM_PATH> <BUILD_DIR_PATH>"
 	exit 1
 fi
 
