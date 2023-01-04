@@ -15,6 +15,8 @@ try:
             bfrt.nat.pipe.Egress.mac_table.add_with_set_mac(0, 0xC, worker_ip[i], 0xffffffff, 1, switch_mac[i], worker_mac[i])
         else: # 4,5,6 (7 has been dropped)
             bfrt.nat.pipe.Egress.mac_table.add_with_set_mac(4, 0xC, 0, 0x0, 1, switch_mac[i], worker_mac[i])
+    # worker0 both has address 0xC0A80101 and 0xC0A9XXXX
+    bfrt.nat.pipe.Egress.mac_table.add_with_set_mac(0, 0xC, 0xC0A90000, 0xffff0000, 1, switch_mac[0], worker_mac[0])
 except:
     print("Cannot load mac_table.")
 
@@ -28,9 +30,11 @@ try:
         if worker_type[i] == 2: # transition_type == 0/1/6 (0,1 is mismatch)
             bfrt.nat.pipe.Ingress.send_out.forward_table.add_with_set_egress_port(0, 0x0, 0, 0x0, 0, 0x0, 0, 0x0, 0, 0x0, 2, worker_port[i])
         # transition_type == 8
-        bfrt.nat.pipe.Ingress.send_out.forward_table.add_with_set_egress_port(8, 0xF, 0, 0x0, worker_mac[i], 0xffffffffffff, 0, 0x0, 0, 0x0, 1, worker_port[i])
+        # bfrt.nat.pipe.Ingress.send_out.forward_table.add_with_set_egress_port(8, 0xF, 0, 0x0, worker_mac[i], 0xffffffffffff, 0, 0x0, 0, 0x0, 1, worker_port[i])
     # transition_type == 7
     bfrt.nat.pipe.Ingress.send_out.forward_table.add_with_drop(7, 0xF, 0, 0x0, 0, 0x0, 0, 0x0, 0, 0x0, 1)
+    # worker0 both has address 0xC0A80101 and 0xC0A803XX
+    bfrt.nat.pipe.Ingress.send_out.forward_table.add_with_set_egress_port(1, 0xD, 1, 0x1, 0, 0x0, 0, 0x0, 0xC0A90000, 0xffff0000, 1, worker_port[0])
     
 
 except:

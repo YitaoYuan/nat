@@ -57,16 +57,20 @@ You can ignore this warning if you have cross-queue packets.\n");
 #define NUM_MBUFS 8191
 #define MBUF_CACHE_SIZE 250
 #define BURST_SIZE 32
-static const struct rte_eth_conf port_conf_default = {
-    .rxmode = {
-        .max_rx_pkt_len = RTE_ETHER_MAX_LEN,
-    },
-};
+// static const struct rte_eth_conf port_conf_default = {
+//     .rxmode = {
+//         .max_rx_pkt_len = RTE_ETHER_MAX_LEN,
+//     },
+// };
 
 static inline int
 port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 {
-    struct rte_eth_conf port_conf = port_conf_default;
+    //struct rte_eth_conf port_conf = port_conf_default;
+    struct rte_eth_conf port_conf;
+    memset(&port_conf, 0, sizeof(port_conf));
+    port_conf.rxmode.max_rx_pkt_len = RTE_ETHER_MAX_LEN;
+    
     const uint16_t rx_rings = 1, tx_rings = 1;
     uint16_t nb_rxd = RX_RING_SIZE;
     uint16_t nb_txd = TX_RING_SIZE;

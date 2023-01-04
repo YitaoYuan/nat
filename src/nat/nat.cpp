@@ -595,14 +595,6 @@ void backward_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process
     metadata_sum.add(&metadata.index, sizeof(metadata.index));
 
     metadata.checksum = metadata_sum.checksum(&metadata.checksum);
-
-#ifdef PATH_TEST
-    if(is_tcp) swap(*(checksum_t*)(hdr->L4_header.tcp.payload + 4), 
-                    *(checksum_t*)(hdr->L4_header.tcp.payload + 6));
-    else swap(*(checksum_t*)(hdr->L4_header.udp.payload + 4), 
-            *(checksum_t*)(hdr->L4_header.udp.payload + 6));
-#endif
-
 // send back
     send_back(buf, queue);
 }

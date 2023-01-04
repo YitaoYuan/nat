@@ -24,8 +24,8 @@ const bit<16> TYPE_IPV4 = 0x800;
 const bit<16> TYPE_METADATA = SHARED_TYPE_METADATA;
 
 //you can change these by tables to support dynamic & multiple LAN address allocation
-const ip4_addr_t LAN_ADDR = SHARED_LAN_ADDR;// 192.168.0.0
-const ip4_addr_t LAN_ADDR_MASK = SHARED_LAN_ADDR_MASK;// /24
+// const ip4_addr_t LAN_ADDR = SHARED_LAN_ADDR;// 192.168.0.0
+// const ip4_addr_t LAN_ADDR_MASK = SHARED_LAN_ADDR_MASK;// /24
 
 const flow_num_t SWITCH_FLOW_NUM = SHARED_SWITCH_FLOW_NUM;
 const flow_num_t SWITCH_FLOW_NUM_PER_REG = SHARED_SWITCH_FLOW_NUM_PER_REG;
@@ -191,9 +191,9 @@ parser IngressParser(packet_in packet,
 
         transition select(hdr.ethernet.ether_type ++ meta.nf_port_hdr.port_type) {//没检查MAC addr，没必要
             TYPE_METADATA ++ 2w2:   parse_metadata;
-            TYPE_IPV4 ++ 2w0:   parse_ipv4_from_LAN;
+            TYPE_IPV4 ++ 2w0:   maybe_type_0;
             TYPE_IPV4 ++ 2w1:   maybe_type_1;
-            default         :   parse_other_flow;
+            // default         :   parse_other_flow;
         }
     }
 
@@ -223,20 +223,20 @@ parser IngressParser(packet_in packet,
         transition accept;
     }
 
-    state parse_ipv4_from_LAN {
-        ipv4_t ip = packet.lookahead<ipv4_t>();
-        transition select(ip.dst_addr) {
-            LAN_ADDR &&& LAN_ADDR_MASK  :   parse_other_flow;// in->in
-            default                     :   maybe_type_0;// in->out
-        }
-    }
+    // state parse_ipv4_from_LAN {
+    //     ipv4_t ip = packet.lookahead<ipv4_t>();
+    //     transition select(ip.dst_addr) {
+    //         LAN_ADDR &&& LAN_ADDR_MASK  :   parse_other_flow;// in->in
+    //         default                     :   maybe_type_0;// in->out
+    //     }
+    // }
 
     state maybe_type_0 {
         ipv4_t ip = packet.lookahead<ipv4_t>();
         transition select(ip.protocol ++ ip.ihl) {
             TCP_PROTOCOL ++ 4w5 :   mark_type_0;
             UDP_PROTOCOL ++ 4w5 :   mark_type_0;
-            default             :   parse_other_flow;
+            // default             :   parse_other_flow;
         }
     }
 
@@ -251,7 +251,7 @@ parser IngressParser(packet_in packet,
         transition select(ip.protocol ++ ip.ihl) {
             TCP_PROTOCOL ++ 4w5 :   mark_type_1;
             UDP_PROTOCOL ++ 4w5 :   mark_type_1;
-            default             :   parse_other_flow;
+            // default             :   parse_other_flow;
         }
     }
 
@@ -296,11 +296,15 @@ parser IngressParser(packet_in packet,
         transition accept;
     }
 
-    state parse_other_flow {
-        meta.metadata_checksum_err = false;
-        meta.transition_type = 8;
-        transition accept;
-    }
+    // state parse_other_flow {
+    //     /*
+    //     You may delete this state.
+    //     Flow with transition type 8 is for test only.
+    //     */
+    //     meta.metadata_checksum_err = false;
+    //     meta.transition_type = 8;
+    //     transition accept;
+    // }
 }
 
 

@@ -11,9 +11,15 @@ then
 	exit 1
 fi
 
+
+
 DIR=`cd $(dirname $0); pwd`
 PROGRAM=$1
+
+if [ $2 != "NULL" ];
+then
 BFRT_PRELOAD_FILE=`cd $(dirname $2); pwd`/$(basename $2)
+fi
 
 echo_i "Find and kill previous process."
 
@@ -31,12 +37,14 @@ echo_i "Boot switch in the background."
 
 echo_r "$SDE/run_switchd.sh -p $PROGRAM > /dev/null 2>&1 &"
 
-
+if [ $2 != "NULL" ];
+then
 echo_i "Initializing tables... "
 
 echo_r "$SDE/run_bfshell.sh -b $BFRT_PRELOAD_FILE > /dev/null 2>&1"
 
 echo_i "Done."
+fi
 
 
 echo_i "Configuring ports... "

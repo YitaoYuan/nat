@@ -594,6 +594,7 @@ control Ingress(
                 meta.all_flow_timeout = reg_backward_update_all_flow_timestamp.execute(hdr.metadata.index);
             }
 
+            // TODO: counter 应该对type1计数
             if(meta.transition_type == 1) {
                 meta.ingress_end = true;    // flow type 1 has nothing to do except address translation.
             }

@@ -28,8 +28,8 @@
 
 #define DEBUG 
 
-#define ONE_ENTRY_TEST
-//#define PATH_TEST
+//#define ONE_ENTRY_TEST
+#define PATH_TEST
 
 /* THE VALUE BELOW IS ONLY NEEDED BY nf.cpp */
 #define SHARED_TOTAL_FLOW_NUM (1 << 21)
