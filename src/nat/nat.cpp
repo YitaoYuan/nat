@@ -124,6 +124,8 @@ switch_counter_t sw_cnt[SWITCH_FLOW_NUM];
 wait_entry_t wait_set[SWITCH_FLOW_NUM];
 wait_entry_t wait_set_head;
 
+int pkt_cnt, update_cnt;
+
 typedef unsigned short hh_cnt_t;
 heavy_hitter_t<hh_cnt_t, flow_entry_t*, 8, 4096, SHARED_AGING_TIME_US/10> heavy_hitter[SWITCH_FLOW_NUM];
 
@@ -270,6 +272,8 @@ void send_back(struct rte_mbuf *buf, queue_process_buf *queue)
 
 void send_update(flow_num_t index, queue_process_buf *queue)
 {
+    update_cnt ++;
+
     struct rte_mbuf *buf = queue->alloc();
     buf->data_len = sizeof(ethernet_t) + sizeof(metadata_t);
     buf->pkt_len = buf->data_len;
@@ -633,7 +637,7 @@ void ack_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf 
     wait_entry_t *wait_entry = &wait_set[index];
     if(!wait_entry -> is_waiting) {
         queue->drop(buf);
-        fprintf(stderr, "Redundant ACK, drop.\n");
+        debug_printf("Redundant ACK, drop.\n");
         return; // Redundant ACK
     }
     // mismatch
@@ -708,6 +712,11 @@ void nf_aging(host_time_t timestamp)
     // for debug
     static host_time_t last_timestamp = 0;
     if(timestamp - last_timestamp < 1000000) return;
+    printf("process: %.2lf mpps\nupdate: %.2lf kpps\n", 
+        1.0*pkt_cnt/(timestamp - last_timestamp), 
+        1e3*update_cnt/(timestamp - last_timestamp));
+    update_cnt = 0;
+    pkt_cnt = 0;
     last_timestamp = timestamp;    
 
 
@@ -721,7 +730,7 @@ void nf_aging(host_time_t timestamp)
         entry = entry->r;
     }
     debug_printf("new\n");
-    debug_printf("%d active flows\n", cnt);
+    printf("%d active flows\n", cnt);
 }
 
 void report_wait_time_too_long()
@@ -784,6 +793,8 @@ void nf_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf *
     }
     
     if(ntohl(hdr->metadata.index) >= SWITCH_FLOW_NUM) {queue->drop(buf); return;}
+
+    pkt_cnt++;
 
     if(hdr->metadata.type == 6)
         ack_process(timestamp, buf, queue);

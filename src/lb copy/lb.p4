@@ -314,7 +314,7 @@ control send_out(
             meta.transition_type: ternary;
             meta.match: ternary;
             hdr.metadata.server_addr: ternary;
-            hdr.metadata.dst_addr: ternary;// for type 1
+            hdr.ipv4.dst_addr: ternary;// for type 1
         }
         actions = {
             set_egress_port;
@@ -325,14 +325,13 @@ control send_out(
     }
 
     apply {
-        //注意，此时type 0/1还没有变成4/5
+        //注意，此时type 0还没有变成4
         forward_table.apply();
 
         hdr.ethernet.ether_type = TYPE_METADATA;
 
-        bit<8> new_type = hdr.metadata.type + 4;
-        if((meta.transition_type & 0b1110) == 0 && meta.match == 0) {
-            hdr.metadata.type = new_type;
+        if(meta.transition_type == 0 && meta.match == 0) {
+            hdr.metadata.type = 4;
         }
     }
 }
@@ -595,9 +594,9 @@ control Ingress(
             }
 
             // TODO: counter 应该对type1计数
-            if(meta.transition_type == 1) {
-                meta.ingress_end = true;    // flow type 1 has nothing to do except address translation.
-            }
+            // if(meta.transition_type == 1) {
+            //     meta.ingress_end = true;    // flow type 1 has nothing to do except address translation.
+            // }
         }
 
         meta.need_match = 0;
@@ -615,12 +614,12 @@ control Ingress(
             else if(meta.transition_type == 6) {
                 meta.version = reg_version_update.execute(hdr.metadata.index);
             }
-            else {// (0, 0) || (1, _)
+            else if(meta.transition_type == 0){// (0, 0)
                 hdr.metadata.old_version = reg_version_read.execute(hdr.metadata.index);
             }
         }
     
-        if (meta.transition_type == 0 && meta.all_flow_timeout == 0) {
+        if ((meta.transition_type == 0 && meta.all_flow_timeout == 0) || meta.transition_type == 1) {
             meta.need_match = 1;
         }
 

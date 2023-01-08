@@ -21,7 +21,7 @@ struct heavy_hitter_t{
         memset(entry, 0, sizeof(entry));
     }
     void update_epoch(u32 d_epoch) {
-        if(d_epoch >= 32) {
+        if(d_epoch >= sizeof(COUNTER_T)*8) {
             for(size_t i = 0; i < size; i++) 
                 entry[i].cnt = 0;
         }

@@ -47,12 +47,23 @@ using std::max;
 using std::min;
 
 volatile bool clear_flag;
-unordered_map<flow_id_t, flow_val_t, my_hash<flow_id_t, SHARED_SWITCH_CRC_POLY>, mem_equal<flow_id_t>>fmap;
-unordered_map<flow_val_t, flow_val_t, my_hash<flow_val_t, SHARED_SWITCH_CRC_POLY>, mem_equal<flow_val_t>>bmap;
+unordered_map<flow_id_t, map_entry_t*, my_hash<flow_id_t, SHARED_SWITCH_CRC_POLY>, mem_equal<flow_id_t>>fmap;
+unordered_map<flow_val_t, map_entry_t*, my_hash<flow_val_t, SHARED_SWITCH_CRC_POLY>, mem_equal<flow_val_t>>bmap;
+map_entry_t head;
+
+// uint64_t pkt_cnt;
+// uint64_t pre_cnt, checkpoint;
+uint64_t pre_ts;
+uint64_t f_cnt, b_cnt;
 
 void nf_init(host_time_t timestamp)
 {       
-    
+    // pkt_cnt = 0;
+    // pre_cnt = 0;
+    // checkpoint = 0;
+    pre_ts = timestamp;
+
+    head.l = head.r = &head;
 }
 
 void forward_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf *queue)
@@ -66,20 +77,30 @@ void forward_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_
 
     flow_id_t fid = (flow_id_t){hdr->ip.src_addr, hdr->ip.dst_addr, hdr->udp.src_port, hdr->udp.dst_port, hdr->ip.protocol, 0};
 
-    auto it = fmap.insert(make_pair(fid, (flow_val_t){0, 0}));
+    auto it = fmap.insert(make_pair(fid, (map_entry_t*)NULL));
     if(it.second) {
-        flow_val_t fval = (flow_val_t){hdr->ip.src_addr ^ 0xff000000, hdr->udp.src_port};
-        it.first->second = fval;
-        bmap[fval] = (flow_val_t){hdr->ip.src_addr, hdr->udp.src_port};
+        map_entry_t *entry = (map_entry_t *)malloc(sizeof(map_entry_t));
+        entry->id = fid;
+        entry->val = (flow_val_t){hdr->ip.src_addr ^ 0xff000000, hdr->udp.src_port};
+
+        list_insert_before(&head, entry);
+
+        it.first->second = entry;
+        bmap[entry->val] = entry;
     }
-    hdr->ip.src_addr = it.first->second.wan_addr;
-    hdr->udp.src_port = it.first->second.wan_port;
+    map_entry_t *entry = it.first->second;
+
+    entry->ts = timestamp;
+    list_move_to_back(&head, entry);
+
+    hdr->ip.src_addr = entry->val.wan_addr;
+    hdr->udp.src_port = entry->val.wan_port;
     queue->send(buf);
+    f_cnt ++;
 }
 
 void backward_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf *queue)
 {
-    //fprintf(stderr, "back\n");
     hdr_t* hdr = rte_pktmbuf_mtod(buf, hdr_t*);
     *(u16*)hdr->ethernet.dst_addr = htons(W1_HI16);
     *(u32*)(hdr->ethernet.dst_addr+2) = htonl(W1_LO32);
@@ -91,20 +112,57 @@ void backward_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process
         queue->drop(buf);
         return;
     }
+    map_entry_t *entry = it->second;
 
-    hdr->ip.src_addr = it->second.wan_addr;// lan_addr
-    hdr->udp.src_port = it->second.wan_port;// lan_port
+    entry->ts = timestamp;
+    list_move_to_back(&head, entry);
+
+    hdr->ip.dst_addr = entry->id.src_addr;// lan_addr
+    hdr->udp.dst_port = entry->id.src_port;// lan_port
     queue->send(buf);
+    b_cnt ++;
 }
 
 void nf_aging(host_time_t timestamp)
 {
-    if(clear_flag) {
-        printf("clear\n");
-        fmap.clear();
-        bmap.clear();
-        clear_flag = 0;
+    while(!list_empty(&head)) {
+        map_entry_t *entry = list_front(&head);
+        if(timestamp-entry->ts < 10000000) break;
+        fmap.erase(entry->id);
+        bmap.erase(entry->val);
+        list_erase(entry);
+        free(entry);
     }
+    if(timestamp - pre_ts > 1000000) {
+        fprintf(stderr, "f:%ld b:%ld\n", f_cnt, b_cnt);
+        f_cnt = b_cnt = 0;
+
+        pre_ts = timestamp;
+        int flowcnt = 0;
+        for(map_entry_t *entry = head.r; entry != &head; entry = entry->r)
+            flowcnt ++;
+        fprintf(stderr, "%d\n", flowcnt);
+    }
+    // if(clear_flag) {
+    //     printf("clear\n");
+    //     fmap.clear();
+    //     bmap.clear();
+    //     clear_flag = 0;
+    // }
+    // if((pkt_cnt - checkpoint) > 1000) {
+    //     checkpoint = pkt_cnt;
+    //     uint64_t ts = rte_rdtsc();
+    //     uint64_t dt = hz_to_us(ts - pre_ts);
+    //     if(dt >= 1000000) {
+    //         uint64_t d_cnt = pkt_cnt - pre_cnt;
+    //         pre_ts = ts;
+    //         pre_cnt = pkt_cnt;
+    //         printf("%.2lf mpps\n", 1.0*d_cnt/dt);
+    //     }
+    // }
+
+    
+
 }
 
 void nf_update(host_time_t timestamp, queue_process_buf *queue)
@@ -118,6 +176,8 @@ void nf_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf *
     if(buf->pkt_len != buf->data_len) {queue->drop(buf); return;}
 
     if(buf->pkt_len < sizeof(hdr_t)) {queue->drop(buf); return;}
+
+    // pkt_cnt ++;
 
     hdr_t* hdr = rte_pktmbuf_mtod(buf, hdr_t*);
 

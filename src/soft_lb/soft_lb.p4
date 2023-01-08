@@ -7,14 +7,21 @@
 #include <tna.p4>
 #endif
 
-
+#include "shared_metadata.h"
 /*************************************************************************
 *********************** H E A D E R S  ***********************************
 *************************************************************************/
 
 
-struct headers {
+typedef bit<48> mac_addr_t;
 
+header ethernet_t {
+    mac_addr_t dst_addr;
+    mac_addr_t src_addr;
+    bit<16>   ether_type;
+}
+struct headers {
+    ethernet_t eth;
 }
 
 struct nf_port_t{
@@ -51,6 +58,7 @@ parser IngressParser(packet_in packet,
 
     state parse_port_metadata {
         meta.nf_port_hdr = port_metadata_unpack<nf_port_t>(packet);
+        packet.extract(hdr.eth);
         transition accept;
     }
 }
@@ -70,12 +78,18 @@ control Ingress(
 
     apply {
         ig_intr_tm_md.bypass_egress = 1;
-        if(ig_intr_md.ingress_port == 180) // 1->4
-            set_egress_port(132);
-        else if(ig_intr_md.ingress_port == 132) // 4->3
-            set_egress_port(148);
-        else if(ig_intr_md.ingress_port == 148) // 3->1
-            set_egress_port(180);
+        if(ig_intr_md.ingress_port == w3) // 3->4
+            set_egress_port(w4);
+        else if(ig_intr_md.ingress_port == w1) // 1->3
+            set_egress_port(w3);
+        else if(ig_intr_md.ingress_port == w2) // 2->3
+            set_egress_port(w3);
+        else if(ig_intr_md.ingress_port == w4) {// 4->1/2
+            if(hdr.eth.dst_addr[31:0] == W1_LO32)
+                set_egress_port(w1);
+            else 
+                set_egress_port(w2);
+        }
     }
 }
 
@@ -90,6 +104,7 @@ control IngressDeparser(
         in ingress_intrinsic_metadata_for_deparser_t ig_intr_dprsr_md) {
 
     apply{
+        packet.emit(hdr.eth);
     }
 }
 

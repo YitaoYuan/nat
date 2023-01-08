@@ -23,21 +23,23 @@ lcore_main(uint16_t port, struct rte_mempool *mbuf_pool)
 
     nf_init(get_mytime());
 
-    while(true) {
-        nf_aging(get_mytime());
-        nf_update(get_mytime(), &queue);
+    for(int i = 0; ; i++) {
+        if(unlikely((i & 0xf) == 0)) {
+            nf_aging(get_mytime());
+            nf_update(get_mytime(), &queue);
+        }
 
         struct rte_mbuf *buf = queue.receive();
         if(buf != NULL)
             nf_process(get_mytime(), buf, &queue);
 
-        if(queue.total_rx_nb + queue.total_alloc_nb != queue.total_tx_nb + queue.total_drop_nb) {
-            fprintf(stderr, "rx: %u, tx: %u, drop: %u, alloc: %u\n", 
-                queue.total_rx_nb, queue.total_tx_nb, queue.total_drop_nb, queue.total_alloc_nb);
-            fprintf(stderr, "WARNING: total_rx_nb + total_alloc_nb != total_tx_nb + total_drop_nb. \n\
-Either some packets are not recycled or some external packets send/droped by this queue.\n\
-You can ignore this warning if you have cross-queue packets.\n");
-        }
+//         if(queue.total_rx_nb + queue.total_alloc_nb != queue.total_tx_nb + queue.total_drop_nb) {
+//             fprintf(stderr, "rx: %u, tx: %u, drop: %u, alloc: %u\n", 
+//                 queue.total_rx_nb, queue.total_tx_nb, queue.total_drop_nb, queue.total_alloc_nb);
+//             fprintf(stderr, "WARNING: total_rx_nb + total_alloc_nb != total_tx_nb + total_drop_nb. \n\
+// Either some packets are not recycled or some external packets send/droped by this queue.\n\
+// You can ignore this warning if you have cross-queue packets.\n");
+//         }
     }
 }
 /*

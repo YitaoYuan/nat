@@ -13,30 +13,21 @@ struct flow_id_t{
 }__attribute__ ((__packed__));
 
 struct flow_val_t{
-    ip_addr_t server_addr;
+    ip_addr_t   server_addr;
 }__attribute__ ((__packed__));
 
 struct map_entry_t{
     flow_id_t id;
     flow_val_t val;
-}__attribute__ ((__packed__));
-
-struct metadata_t{
-    map_entry_t map;
-    ip_addr_t   hash_addr;
-    version_t   old_version;
-    version_t   new_version;
-    u8          type;
-    switch_counter_t  main_flow_count;
-    flow_num_t  index;
-    checksum_t  checksum;
+    host_time_t ts;
+    map_entry_t *l;
+    map_entry_t *r;
 }__attribute__ ((__packed__));
 
 struct hdr_t{
     ethernet_t ethernet;
-    metadata_t metadata;
     ip_t ip;
-    L4_header_t L4_header;
+    udp_t udp;
 }__attribute__ ((__packed__));
 
 #endif

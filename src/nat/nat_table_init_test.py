@@ -36,7 +36,8 @@ try:
     # worker0 both has address 0xC0A80101 and 0xC0A803XX
     bfrt.nat.pipe.Ingress.send_out.forward_table.add_with_set_egress_port(1, 0xD, 1, 0x1, 0, 0x0, 0, 0x0, 0xC0A90000, 0xffff0000, 1, worker_port[0])
     
-
+    # for experiment only
+    bfrt.nat.pipe.Ingress.send_out.forward_table.add_with_set_egress_port(0, 0xD, 1, 0x1, 0, 0x0, 0xC0A80204, 0xffffffff, 0, 0x0, 1, 116)
 except:
     print("Cannot load forward_table.")
 

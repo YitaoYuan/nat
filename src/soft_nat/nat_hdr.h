@@ -20,6 +20,9 @@ struct flow_val_t{
 struct map_entry_t{
     flow_id_t id;
     flow_val_t val;
+    host_time_t ts;
+    map_entry_t *l;
+    map_entry_t *r;
 }__attribute__ ((__packed__));
 
 struct hdr_t{

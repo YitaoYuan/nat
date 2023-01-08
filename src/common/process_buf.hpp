@@ -30,6 +30,7 @@ public:
         rx_bufs = (struct rte_mbuf **)calloc(rx_size, sizeof(struct rte_mbuf *));
         tx_bufs = (struct rte_mbuf **)calloc(tx_size, sizeof(struct rte_mbuf *));
         total_rx_nb = total_tx_nb = total_drop_nb = total_alloc_nb = 0;
+        assert(rx_size % 8 == 0);
     }
 
     void flush() {
