@@ -23,7 +23,7 @@ while True:
 
     client.settimeout(1)
     cnt = 0
-    while cnt < 2:
+    while cnt < 1:
         try:
             client.sendto(msg.encode('utf-8'), dst)
             cnt = cnt + 1

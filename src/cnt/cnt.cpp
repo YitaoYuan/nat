@@ -16,6 +16,7 @@
 #include <rte_cycles.h>
 #include <rte_lcore.h>
 #include <rte_mbuf.h>
+
 #include "../common/process_buf.hpp"
 
 /* system utilities */
@@ -24,7 +25,7 @@
 /* custom data structure */
 #include "shared_metadata.h"
 #include "../common/type.h"
-#include "lb_hdr.h"
+#include "cnt_hdr.h"
 #include "../common/hash.hpp"
 #include "../common/list.hpp"
 #include "../common/checksum.hpp"
@@ -32,7 +33,6 @@
 
 /* program skeleton */
 #include "../common/dpdk_skeleton.hpp"
-
 
 #ifdef DEBUG
 #define debug_printf(...) fprintf(stderr, __VA_ARGS__)
@@ -90,6 +90,7 @@ struct wait_entry_t{
     host_time_t first_req_time_host;
     host_time_t last_req_time_host;// host
     bool is_waiting;
+    bool is_closing;// this is for counter only 
     wait_entry_t *l, *r;
 };
 
@@ -153,63 +154,36 @@ void stop(int signo)
 
 void print_map(map_entry_t flow_map, flow_num_t index)
 {
-    flow_id_t id = flow_map.id;
-    flow_val_t val = flow_map.val;
-    debug_printf("(src=%d.%d.%d.%d:%d, dst=%d.%d.%d.%d:%d, protocal=%d) -> (%d.%d.%d.%d, index %d)\n", 
-        ((u8*)&id.src_addr)[0],
-        ((u8*)&id.src_addr)[1],
-        ((u8*)&id.src_addr)[2],
-        ((u8*)&id.src_addr)[3],
-        ntohs(id.src_port),
+    // flow_id_t id = flow_map.id;
+    // flow_val_t val = flow_map.val;
+    // debug_printf("(src=%d.%d.%d.%d:%d, dst=%d.%d.%d.%d:%d, protocal=%d) -> (%d.%d.%d.%d, index %d)\n", 
+    //     ((u8*)&id.src_addr)[0],
+    //     ((u8*)&id.src_addr)[1],
+    //     ((u8*)&id.src_addr)[2],
+    //     ((u8*)&id.src_addr)[3],
+    //     ntohs(id.src_port),
 
-        ((u8*)&id.dst_addr)[0],
-        ((u8*)&id.dst_addr)[1],
-        ((u8*)&id.dst_addr)[2],
-        ((u8*)&id.dst_addr)[3],
-        ntohs(id.dst_port),
+    //     ((u8*)&id.dst_addr)[0],
+    //     ((u8*)&id.dst_addr)[1],
+    //     ((u8*)&id.dst_addr)[2],
+    //     ((u8*)&id.dst_addr)[3],
+    //     ntohs(id.dst_port),
 
-        id.protocol,
+    //     id.protocol,
 
-        ((u8*)&val.server_addr)[0],
-        ((u8*)&val.server_addr)[1],
-        ((u8*)&val.server_addr)[2],
-        ((u8*)&val.server_addr)[3],
+    //     ((u8*)&val.server_addr)[0],
+    //     ((u8*)&val.server_addr)[1],
+    //     ((u8*)&val.server_addr)[2],
+    //     ((u8*)&val.server_addr)[3],
         
-        index
-    );
+    //     index
+    // );
 }
-
-/*
-void update_hash_table(vector<ip_addr_t> server_ip, u32 table_size, maglev_hash_table_t &table) 
-{
-    assert((table_size & (u32)-(int)table_size) == table_size);// power of 2
-    static u32 crc_poly1 = 0x04C11DB7, crc_poly2 = 0x1EDC6F41;
-    static my_hash<ip_addr_t, crc_poly1> offset_hash;
-    static my_hash<ip_addr_t, crc_poly2> step_hash;
-    // maglev hashing
-    vector<u32> offset, step;
-    for(ip_addr_t ip_host: server_ip) {
-        assert(ip_host != 0);
-        ip_addr_t ip_net = htonl(ip_host);
-        offset.push_back(offset_hash((u8*)&ip_net, sizeof(ip_net)) % table_size);
-        step.push_back(step_hash((u8*)&ip_net, sizeof(ip_net)) % table_size);
-    }
-    table.resize(table_size);
-    u32 install_num = 0;
-    while(true) {
-        for(size_t i = 0; i < server_ip.size(); i++) {
-            while(table[offset[i]] != 0) 
-                offset[i] = (offset[i] + step[i]) % table_size;
-            table[offset[i]] = htonl(server_ip[i]);
-            install_num ++;
-            if(install_num == table_size) 
-                return;
-        }
-    }
-}*/
 
 void nf_init(host_time_t timestamp)
 {       
+    printf("Total flow capacity: %d\n", TOTAL_FLOW_NUM);
+
     *(u16*)SWITCH_INNER_MAC = htons(SHARED_SWITCH_INNER_MAC_HI16);
     *(u32*)(SWITCH_INNER_MAC+2) = htonl(SHARED_SWITCH_INNER_MAC_LO32);
     *(u16*)NF_INNER_MAC = htons(SHARED_NF_INNER_MAC_HI16);
@@ -237,14 +211,6 @@ void nf_init(host_time_t timestamp)
             list_insert_before(&avail_head, entry);
         }
     }
-
-    //lb_sets = {{0xC0A802FE, {0xC0A80101, 0xC0A80102}, 32}};
-
-    /*for(auto lb_set: lb_sets) {
-        maglev_hash_table_t &table = maglev_hash_table_map[lb_set.vip];
-        assert(vec.empty());
-        update_hash_table(lb_set.server_ip, lb_set.table_size, table);
-    }*/
     
     wait_set_head.l = wait_set_head.r = &wait_set_head;
 
@@ -260,6 +226,14 @@ void send_back(struct rte_mbuf *buf, queue_process_buf *queue)
     queue->send(buf);
 }
 
+u8 next_version(u8 version) {
+    return (version & 0xf0) | ((version + 1) & 0x0f);
+}
+
+u8 prev_version(u8 version) {
+    return (version & 0xf0) | ((version - 1) & 0x0f);
+}
+// TODO
 void send_update(flow_num_t index, queue_process_buf *queue)
 {
     update_cnt ++;
@@ -271,13 +245,12 @@ void send_update(flow_num_t index, queue_process_buf *queue)
     hdr_t *hdr = rte_pktmbuf_mtod(buf, hdr_t *);
     // MAC address is useless between nf & switch
 
-    hdr->metadata.map = wait_set[index].new_flow->map;
-    hdr->metadata.hash_addr = 0;
+    // for counter, the update has two stage
+    hdr->metadata.map = wait_set[index].new_flow->map; // match nothing
     hdr->metadata.old_version = wait_set[index].old_version;
-    hdr->metadata.new_version = (hdr->metadata.old_version & 0xf0) | ((hdr->metadata.old_version + 1) & 0x0f);
-
+    hdr->metadata.new_version = next_version(hdr->metadata.old_version);
     hdr->metadata.type = 6;
-    hdr->metadata.main_flow_count = 0;
+    hdr->metadata.main_flow_count = wait_set[index].is_closing;    
 
     hdr->metadata.index = htonl(index);
 
@@ -298,18 +271,33 @@ void send_update(flow_num_t index, queue_process_buf *queue)
 
     send_back(buf, queue);
 }
-
+// TODO
 void try_add_update(flow_num_t wait_set_index, metadata_t &metadata, host_time_t timestamp, queue_process_buf *queue)
 {
-    if(!wait_set[wait_set_index].is_waiting && timestamp - wait_set[wait_set_index].last_req_time_host >= SWAP_TIME_US) {
+    if(!wait_set[wait_set_index].is_waiting && 
+        (timestamp - wait_set[wait_set_index].last_req_time_host >= SWAP_TIME_US || 
+        sw_entry[wait_set_index]->map.id.protocol == 0)) {
         
-        flow_entry_t *new_entry = heavy_hitter_get(wait_set_index);
-
-        if(new_entry == NULL) return;
-
-        assert(metadata.map.val.server_addr != 0);
-
         flow_entry_t *old_entry = sw_entry[wait_set_index];
+        flow_entry_t *new_entry;
+        if(old_entry->map.id.protocol == 0) {
+            new_entry = heavy_hitter_get(wait_set_index);
+            if(new_entry == NULL) return;
+        }
+        else {
+            if(list_empty(&avail_head)) {
+                debug_printf("no rule for replacement\n");
+                return;
+            }
+            new_entry = list_front(&avail_head);
+            new_entry->map = (map_entry_t){};
+            new_entry->index_host = old_entry->index_host;
+            new_entry->timestamp_host = timestamp;
+            new_entry->type = list_type::inuse;
+            new_entry->is_waiting = true;
+            list_move_to_back(&inuse_head, new_entry);
+            // no id_map insertion
+        }
 
         assert(old_entry->type == list_type::sw);
 
@@ -320,27 +308,32 @@ void try_add_update(flow_num_t wait_set_index, metadata_t &metadata, host_time_t
                                     metadata.old_version, 
 #endif
                                     timestamp, timestamp, 
-                                    true, NULL, NULL};
+                                    true, old_entry->map.id.protocol != 0, NULL, NULL};// first, close the entry
             
         // map entry
         new_entry->is_waiting = 1;// locked, it will not be moved to list "avail" immediately
         old_entry->is_waiting = 1;
 
-        assert(old_entry->map.id.src_addr != 0);
-        auto ret = id_map.insert(make_pair(old_entry->map.id, old_entry));
-        if(!ret.second) {
-            fprintf(stderr, "WARNING: (%x:%hu, %x:%hu, %d) already exists." ,
-                ntohl(old_entry->map.id.src_addr), ntohs(old_entry->map.id.src_port),
-                ntohl(old_entry->map.id.dst_addr), ntohs(old_entry->map.id.dst_port),
-                old_entry->map.id.protocol);
+        // wait for response to merge the value on switch
+        old_entry->map.val.counter = 0;
+
+        if(old_entry->map.id.protocol != 0) {
+            auto ret = id_map.insert(make_pair(old_entry->map.id, old_entry));
+            if(!ret.second) {
+                fprintf(stderr, "WARNING: (%x:%hu, %x:%hu, %d) already exists." ,
+                    ntohl(old_entry->map.id.src_addr), ntohs(old_entry->map.id.src_port),
+                    ntohl(old_entry->map.id.dst_addr), ntohs(old_entry->map.id.dst_port),
+                    old_entry->map.id.protocol);
+            }
         }
+            
         //assert(ret.second);
 
         list_insert_before(&wait_set_head, &wait_set[wait_set_index]);// == push_back
         send_update(wait_set_index, queue);
     }
 }
-
+//  TODO
 void update_sw_count(hdr_t * hdr, host_time_t timestamp)
 {
     flow_num_t index_host = ntohl(hdr->metadata.index);
@@ -359,12 +352,12 @@ void update_sw_count(hdr_t * hdr, host_time_t timestamp)
     heavy_hitter_count(index_host, sw_entry[index_host], diff, timestamp);
 }
 
-void forward_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf *queue)
+void process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf *queue)
 {
     hdr_t* hdr = rte_pktmbuf_mtod(buf, hdr_t*);
-// verify 
+    
     bool is_tcp = hdr->ip.protocol == TCP_PROTOCOL;
-
+    bool is_forward = hdr->metadata.type == 4;
 // heavy_hitter for main_flow
     update_sw_count(hdr, timestamp);
 
@@ -376,49 +369,49 @@ void forward_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_
         return;
     } 
     
-    flow_id_t flow_id = {hdr->ip.src_addr, hdr->ip.dst_addr, 
+    flow_id_t flow_id;
+    if(is_forward) 
+        flow_id = {hdr->ip.src_addr, hdr->ip.dst_addr, 
                         hdr->L4_header.udp.src_port, hdr->L4_header.udp.dst_port, // the same as tcp
                         hdr->ip.protocol, (u8)0};
-
-    hash_field_t flow_hash_field = {hdr->ip.src_addr, 
-                        hdr->L4_header.udp.src_port, hdr->L4_header.udp.dst_port,
+    else // 5 
+        flow_id = {hdr->ip.dst_addr, hdr->ip.src_addr, 
+                        hdr->L4_header.udp.dst_port, hdr->L4_header.udp.src_port, // the same as tcp
                         hdr->ip.protocol, (u8)0};
 
 // allocate flow state for new flow    
     // things in map are in network byte order
-    bool overflow = false;
     auto id_map_it = id_map.find(flow_id);
     flow_entry_t *entry;
 
     if(id_map_it == id_map.end()) {// a new flow
+        if(!is_forward) {
+            queue->drop(buf);
+            return;
+        }
+
         flow_num_t id_index_host;
 #ifdef ONE_ENTRY_TEST
         id_index_host = 1;
 #else
-        id_index_host = get_index(flow_hash_field);
+        id_index_host = get_index(flow_id);
 #endif
         assert(id_index_host == index);
 
-        
         if(list_empty(&avail_head)) {
-            fprintf(stderr, "Warning: Too full to allocate an entry for a new flow, use hashing.\n");
-            static flow_entry_t tmp_entry;
-            entry = &tmp_entry;
-            overflow = true;
+            debug_printf("Warning: Too full to allocate an entry for a new flow, drop.\n");
+            queue->drop(buf);
+            return;
         }
-        else {
-            entry = list_front(&avail_head);
-        }
+        entry = list_front(&avail_head);
         
-        entry->map = {flow_id, {hdr->metadata.hash_addr}};
+        entry->map = {flow_id, {0}};
         entry->index_host = id_index_host;
         entry->type = list_type::inuse;
         entry->is_waiting = 0;
 
-        if(!overflow) {
-            list_move_to_back(&inuse_head, entry);
-            id_map.insert(make_pair(flow_id, entry));
-        }
+        list_move_to_back(&inuse_head, entry);
+        id_map.insert(make_pair(flow_id, entry));
     }
     else {
         entry = id_map_it->second;
@@ -428,45 +421,26 @@ void forward_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_
 
     assert(entry->type == list_type::inuse || (entry->type == list_type::sw && entry->is_waiting));
 // move to the tail of aging queue
-    if(entry->type == list_type::inuse && !overflow) {
+    if(entry->type == list_type::inuse) {
         list_move_to_back(&inuse_head, entry);
     }
 
 // heavy_hitter for this flow
-    if(!overflow) {
-        heavy_hitter_count(index, entry, 1, timestamp);
-    }
+    heavy_hitter_count(index, entry, 1, timestamp);
 
-// translate
-    net_checksum_calculator sum;
+// count
+    entry->map.val.counter++;
 
-    sum.sub(&hdr->ip.dst_addr, sizeof(ip_addr_t));
-    hdr->ip.dst_addr = entry->map.val.server_addr;
-    sum.add(&hdr->ip.dst_addr, sizeof(ip_addr_t));
-
-    hdr->ip.checksum = sum.checksum(&hdr->ip.checksum);
-    if(is_tcp) {
-        hdr->L4_header.tcp.checksum = sum.checksum(&hdr->L4_header.tcp.checksum);
-    }
-    else {
-        if(hdr->L4_header.udp.checksum != 0)// 0 is same for n & h
-            hdr->L4_header.udp.checksum = sum.checksum(&hdr->L4_header.udp.checksum);
-    }
-
-    metadata_t &metadata = hdr->metadata;
 // try add update
+    metadata_t &metadata = hdr->metadata;
     try_add_update(index, metadata, timestamp, queue);
 
 // modify flieds in metadata
     net_checksum_calculator metadata_sum;
     metadata_sum.sub(&metadata.type);// default 2 bytes
-    metadata.type = 2;
+    metadata.type -= 2;// 4->2, 5->3
     metadata.main_flow_count = 0;
     metadata_sum.add(&metadata.type);
-
-    metadata_sum.sub(&metadata.map, sizeof(metadata.map));
-    metadata.map = entry->map;
-    metadata_sum.add(&metadata.map, sizeof(metadata.map));
 
     metadata.checksum = metadata_sum.checksum(&metadata.checksum);
 
@@ -488,7 +462,7 @@ void ack_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf 
     metadata_t &metadata = hdr->metadata;
 
     u8 nf_new_version = metadata.new_version;
-    u8 nf_old_version = (metadata.new_version & 0xf0) | ((metadata.new_version - 1) & 0x0f);
+    u8 nf_old_version = prev_version(metadata.new_version);
     u8 switch_old_version = metadata.old_version;
     const int reject_flag = 0;
     const int accept_flag = 1;
@@ -519,9 +493,11 @@ void ack_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf 
         return; // Redundant ACK
     }
     // mismatch
-    if(wait_entry->old_version != nf_old_version) {
+    if(wait_entry->old_version != nf_old_version || 
+        (wait_entry->is_closing && metadata.main_flow_count != 1) ||
+        (!wait_entry->is_closing && metadata.main_flow_count != 0)){
         queue->drop(buf);
-        fprintf(stderr, "wait_entry's version mismatch, drop.\n");
+        debug_printf("update packet info mismatch, drop.\n");
         return;
     }
 
@@ -538,20 +514,36 @@ void ack_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf 
     list_erase(wait_entry);
 
     if(update_flag == reject_flag) {// reject
-        auto erase_res = id_map.erase(entry_sw->map.id);
-        assert(erase_res);
+        if(entry_sw->map.id.protocol != 0) {
+            auto erase_res = id_map.erase(entry_sw->map.id);
+            assert(erase_res);
+        }
+        if(entry_nf->map.id.protocol == 0) {
+            entry_nf->type = list_type::avail;
+            list_move_to_front(&avail_head, entry_nf);
+        }
     }
     else if(update_flag == accept_flag) { // accept
-        entry_sw->type = list_type::inuse;
+        if(entry_sw->map.id.protocol != 0) {
+            entry_sw->timestamp_host = timestamp;
+            entry_sw->type = list_type::inuse;
+            list_move_to_back(&inuse_head, entry_sw);
+        }
+        else {
+            entry_sw->type = list_type::avail;
+            list_move_to_back(&avail_head, entry_sw);
+        }
+            
         entry_nf->type = list_type::sw;
-
-        entry_sw->timestamp_host = timestamp;
-
-        list_move_to_back(&inuse_head, entry_sw);
         list_move_to_back(&sw_head, entry_nf);
 
-        auto erase_res = id_map.erase(entry_nf->map.id);
-        assert(erase_res); 
+        if(entry_nf->map.id.protocol != 0) {
+            auto erase_res = id_map.erase(entry_nf->map.id);
+            assert(erase_res); 
+        }   
+        else {
+            entry_sw->map.val.counter += metadata.map.val.counter; // merge the state
+        }
 
         sw_entry[index] = entry_nf;
         sw_version[index] = nf_new_version & 0x0f;
@@ -583,7 +575,7 @@ void nf_aging(host_time_t timestamp)
 
         assert(entry->type == list_type::inuse);
 
-        list_move_to_back(&avail_head, entry);
+        list_move_to_front(&avail_head, entry);
         entry->type = list_type::avail;
         auto erase_res = id_map.erase(entry->map.id);
         assert(erase_res == 1); 
@@ -660,11 +652,11 @@ void nf_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf *
         return;
     }
 
-    if(hdr->metadata.map.id.src_addr == 0) {
-        fprintf(stderr, "Error: Switch's entry is empty.\n");
-        queue->drop(buf); 
-        return;
-    }
+    // if(hdr->metadata.map.id.src_addr == 0) {
+    //     fprintf(stderr, "Error: Switch's entry is empty.\n");
+    //     queue->drop(buf); 
+    //     return;
+    // }
 
     if(hdr->metadata.type != 6) {
         if(buf->pkt_len < MIN_IP_LEN) {queue->drop(buf); return;}
@@ -683,8 +675,8 @@ void nf_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf *
 
     if(hdr->metadata.type == 6)
         ack_process(timestamp, buf, queue);
-    else if(hdr->metadata.type == 4) 
-        forward_process(timestamp, buf, queue);
+    else 
+        process(timestamp, buf, queue);
 }
 
 int main(int argc, char **argv)

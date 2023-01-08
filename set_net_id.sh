@@ -58,6 +58,8 @@ then
     echo_r "sudo route add -net $REMOTE_NET_ADDR.0/24 gw $LOCAL_NET_ADDR.254"
 	echo_r "sudo arp -i $IF -s $LOCAL_NET_ADDR.254 $MAC_PREFIX:$MAC_TAIL"
 else
+# this is useful for some NFs
+	echo_r "sudo route add -net $REMOTE_NET_ADDR.0/24 gw $LOCAL_NET_ADDR.254"
 	for i in {128..254}
 	do 
 		echo_r "sudo arp -i $IF -s $LOCAL_NET_ADDR.$i $MAC_PREFIX:$MAC_TAIL"

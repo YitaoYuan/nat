@@ -210,6 +210,8 @@ void update_hash_table(vector<ip_addr_t> server_ip, u32 table_size, maglev_hash_
 
 void nf_init(host_time_t timestamp)
 {       
+    printf("Total flow capacity: %d\n", TOTAL_FLOW_NUM);
+
     *(u16*)SWITCH_INNER_MAC = htons(SHARED_SWITCH_INNER_MAC_HI16);
     *(u32*)(SWITCH_INNER_MAC+2) = htonl(SHARED_SWITCH_INNER_MAC_LO32);
     *(u16*)NF_INNER_MAC = htons(SHARED_NF_INNER_MAC_HI16);
@@ -401,7 +403,7 @@ void forward_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_
 
         
         if(list_empty(&avail_head)) {
-            fprintf(stderr, "Warning: Too full to allocate an entry for a new flow, use hashing.\n");
+            debug_printf("Warning: Too full to allocate an entry for a new flow, use hashing.\n");
             static flow_entry_t tmp_entry;
             entry = &tmp_entry;
             overflow = true;
@@ -685,6 +687,10 @@ void nf_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf *
         ack_process(timestamp, buf, queue);
     else if(hdr->metadata.type == 4) 
         forward_process(timestamp, buf, queue);
+    // Typically the backward packet also need to transfer IP to VIP.
+    // However, this work is typically done by backend server, not the NF.
+    // In our implementation, the IP tranlation for backward packet is done by switch,
+    // because this mapping set is not very large.
 }
 
 int main(int argc, char **argv)

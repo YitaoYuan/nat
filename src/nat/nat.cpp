@@ -188,6 +188,8 @@ void print_map(map_entry_t flow_map, flow_num_t index)
 
 void nf_init(host_time_t timestamp)
 {       
+    printf("Total flow capacity: %d\n", TOTAL_FLOW_NUM);
+
     *(u16*)SWITCH_INNER_MAC = htons(SHARED_SWITCH_INNER_MAC_HI16);
     *(u32*)(SWITCH_INNER_MAC+2) = htonl(SHARED_SWITCH_INNER_MAC_LO32);
     *(u16*)NF_INNER_MAC = htons(SHARED_NF_INNER_MAC_HI16);
@@ -412,7 +414,7 @@ void forward_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_
         }
 
         if(list_empty(&avail_head[index_select])) {
-            fprintf(stderr, "Warning: Too full to allocate an entry for a new flow, drop.\n");
+            debug_printf("Warning: Too full to allocate an entry for a new flow, drop.\n");
             queue->drop(buf);
             return;// too full to allocate, drop
         }

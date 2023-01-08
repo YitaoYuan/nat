@@ -32,7 +32,7 @@
 //#define DEBUG 
 //#define REJECT_TEST
 //#define ONE_ENTRY_TEST
-#define PATH_TEST
+//#define PATH_TEST
 
 /* THE VALUE BELOW IS ONLY NEEDED BY nf.cpp */
 #define SHARED_WAN_ADDR_BASE 0xC0A802FE

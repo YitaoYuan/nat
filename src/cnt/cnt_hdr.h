@@ -12,16 +12,8 @@ struct flow_id_t{
     u8      zero;
 }__attribute__ ((__packed__));
 
-struct hash_field_t{
-    ip_addr_t   src_addr;
-    port_t      src_port;
-    port_t      dst_port;
-    u8      protocol;
-    u8      zero;
-}__attribute__ ((__packed__));
-
 struct flow_val_t{
-    ip_addr_t server_addr;
+    u32 counter;
 }__attribute__ ((__packed__));
 
 struct map_entry_t{
@@ -31,7 +23,6 @@ struct map_entry_t{
 
 struct metadata_t{
     map_entry_t map;
-    ip_addr_t   hash_addr;
     version_t   old_version;
     version_t   new_version;
     u8          type;

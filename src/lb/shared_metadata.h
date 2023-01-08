@@ -27,9 +27,8 @@
 #define SHARED_SWITCH_CRC_POLY 0x04C11DB7
 
 //#define DEBUG 
-
 //#define ONE_ENTRY_TEST
-#define PATH_TEST
+//#define PATH_TEST
 
 /* THE VALUE BELOW IS ONLY NEEDED BY nf.cpp */
 #define SHARED_TOTAL_FLOW_NUM (1 << 21)
