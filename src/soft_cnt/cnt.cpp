@@ -24,7 +24,7 @@
 /* custom data structure */
 #include "shared_metadata.h"
 #include "../common/type.h"
-#include "lb_hdr.h"
+#include "cnt_hdr.h"
 #include "../common/hash.hpp"
 #include "../common/list.hpp"
 #include "../common/checksum.hpp"
@@ -46,65 +46,44 @@ using std::swap;
 using std::max;
 using std::min;
 
-struct mac_t {
-    u8 dmac[6];// ether dmac comes first
-    u8 smac[6];
-};
-
 volatile bool clear_flag;
 unordered_map<flow_id_t, map_entry_t*, my_hash<flow_id_t, SHARED_SWITCH_CRC_POLY>, mem_equal<flow_id_t>>fmap;
-unordered_map<ip_addr_t, ip_addr_t>vipmap;
-unordered_map<ip_addr_t, mac_t>macmap;
 map_entry_t head;
-my_hash<flow_id_t, SHARED_SWITCH_CRC_POLY>flow_hash;
 
 // uint64_t pkt_cnt;
 // uint64_t pre_cnt, checkpoint;
 uint64_t pre_ts;
 uint64_t f_cnt, b_cnt;
 
- 
 void nf_init(host_time_t timestamp)
 {       
-    vipmap[htonl(0xC0A80101)] = htonl(0xC0A802FE);
-    vipmap[htonl(0xC0A80102)] = htonl(0xC0A802FE);
-    mac_t *mac;
-    mac = &macmap[htonl(0xC0A80101)];
-    *(u16*)mac->smac = htons(P1_HI16);
-    *(u32*)(mac->smac+2) = htonl(P1_LO32);
-    *(u16*)mac->dmac = htons(W1_HI16);
-    *(u32*)(mac->dmac+2) = htonl(W1_LO32);
-
-    mac = &macmap[htonl(0xC0A80102)];
-    *(u16*)mac->smac = htons(P2_HI16);
-    *(u32*)(mac->smac+2) = htonl(P2_LO32);
-    *(u16*)mac->dmac = htons(W2_HI16);
-    *(u32*)(mac->dmac+2) = htonl(W2_LO32); 
-
+    // pkt_cnt = 0;
+    // pre_cnt = 0;
+    // checkpoint = 0;
     pre_ts = timestamp;
 
     head.l = head.r = &head;
 }
 
-
 void forward_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf *queue)
 {
     //fprintf(stderr, "fw\n");
     hdr_t* hdr = rte_pktmbuf_mtod(buf, hdr_t*);
+    *(u16*)hdr->ethernet.dst_addr = htons(W3_HI16);
+    *(u32*)(hdr->ethernet.dst_addr+2) = htonl(W3_LO32);
+    *(u16*)hdr->ethernet.src_addr = htons(P3_HI16);
+    *(u32*)(hdr->ethernet.src_addr+2) = htonl(P3_LO32);
 
     flow_id_t fid = (flow_id_t){hdr->ip.src_addr, hdr->ip.dst_addr, hdr->udp.src_port, hdr->udp.dst_port, hdr->ip.protocol, 0};
-    
+
     auto it = fmap.insert(make_pair(fid, (map_entry_t*)NULL));
     if(it.second) {
         map_entry_t *entry = (map_entry_t *)malloc(sizeof(map_entry_t));
         entry->id = fid;
-
-        int hash_val = flow_hash(fid) & 1;
-        ip_addr_t dst_ip = htonl(0xC0A80101/* + hash_val*/);
-        entry->val = (flow_val_t){dst_ip};
+        entry->val = {0};
 
         list_insert_before(&head, entry);
-       
+
         it.first->second = entry;
     }
     map_entry_t *entry = it.first->second;
@@ -112,12 +91,40 @@ void forward_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_
     entry->ts = timestamp;
     list_move_to_back(&head, entry);
 
-    hdr->ip.dst_addr = entry->val.server_addr;
-    
-    memcpy(&hdr->ethernet, &macmap[hdr->ip.dst_addr], sizeof(struct mac_t));
+    entry->val.counter++;
     queue->send(buf);
     f_cnt ++;
 }
+
+// void backward_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf *queue)
+// {
+//     hdr_t* hdr = rte_pktmbuf_mtod(buf, hdr_t*);
+//     *(u16*)hdr->ethernet.dst_addr = htons(W1_HI16);
+//     *(u32*)(hdr->ethernet.dst_addr+2) = htonl(W1_LO32);
+//     *(u16*)hdr->ethernet.src_addr = htons(P1_HI16);
+//     *(u32*)(hdr->ethernet.src_addr+2) = htonl(P1_LO32);
+
+//     flow_id_t fid = (flow_id_t){hdr->ip.dst_addr, hdr->ip.src_addr, hdr->udp.dst_port, hdr->udp.src_port, hdr->ip.protocol, 0};
+
+//     auto it = fmap.insert(make_pair(fid, (map_entry_t*)NULL));
+//     if(it.second) {
+//         map_entry_t *entry = (map_entry_t *)malloc(sizeof(map_entry_t));
+//         entry->id = fid;
+//         entry->val = {0};
+
+//         list_insert_before(&head, entry);
+
+//         it.first->second = entry;
+//     }
+//     map_entry_t *entry = it.first->second;
+
+//     entry->ts = timestamp;
+//     list_move_to_back(&head, entry);
+
+//     entry->val.counter++;
+//     queue->send(buf);
+//     b_cnt ++;
+// }
 
 void nf_aging(host_time_t timestamp)
 {
@@ -140,9 +147,24 @@ void nf_aging(host_time_t timestamp)
     }
     // if(clear_flag) {
     //     printf("clear\n");
-    //     fmap.clear();// only clear fmap
+    //     fmap.clear();
+    //     bmap.clear();
     //     clear_flag = 0;
     // }
+    // if((pkt_cnt - checkpoint) > 1000) {
+    //     checkpoint = pkt_cnt;
+    //     uint64_t ts = rte_rdtsc();
+    //     uint64_t dt = hz_to_us(ts - pre_ts);
+    //     if(dt >= 1000000) {
+    //         uint64_t d_cnt = pkt_cnt - pre_cnt;
+    //         pre_ts = ts;
+    //         pre_cnt = pkt_cnt;
+    //         printf("%.2lf mpps\n", 1.0*d_cnt/dt);
+    //     }
+    // }
+
+    
+
 }
 
 void nf_update(host_time_t timestamp, queue_process_buf *queue)
@@ -157,7 +179,14 @@ void nf_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf *
 
     if(buf->pkt_len < sizeof(hdr_t)) {queue->drop(buf); return;}
 
-    forward_process(timestamp, buf, queue);
+    // pkt_cnt ++;
+
+    hdr_t* hdr = rte_pktmbuf_mtod(buf, hdr_t*);
+
+    if(*(u32*)(hdr->ethernet.src_addr+2) == htonl(W1_LO32))
+        forward_process(timestamp, buf, queue);
+    // else 
+    //     backward_process(timestamp, buf, queue);
 }
 
 void 

@@ -210,11 +210,13 @@ parser IngressParser(packet_in packet,
 
     state mark_type_2 {
         meta.transition_type = 2;
+        // packet.extract(hdr.ipv4);
         transition accept;
     }
 
     /*state mark_type_3 {
         meta.transition_type = 3;
+        // packet.extract(hdr.ipv4);
         transition accept;
     }*/
 

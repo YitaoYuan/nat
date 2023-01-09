@@ -31,6 +31,12 @@
 //#define PATH_TEST
 
 /* THE VALUE BELOW IS ONLY NEEDED BY nf.cpp */
+#define SHARED_WAIT_TIME_US 20000
+
+// these 2 values is for 1 thread and 130k entries
+#define UPDATE_TX_LIMIT 10
+#define UPDATE_QUEUE_SIZE 5000
+
 #define SHARED_TOTAL_FLOW_NUM (1 << 21)
 
 #endif

@@ -54,8 +54,8 @@ const flow_num_t SWITCH_FLOW_NUM = SHARED_SWITCH_FLOW_NUM;
 const flow_num_t TOTAL_FLOW_NUM = SHARED_TOTAL_FLOW_NUM;
 
 const host_time_t AGING_TIME_US = SHARED_AGING_TIME_US;
-const host_time_t WAIT_TIME_US = 10000;// 10 ms
-const host_time_t SWAP_TIME_US = AGING_TIME_US / 10;
+const host_time_t WAIT_TIME_US = SHARED_WAIT_TIME_US;// 10 ms
+const host_time_t SWAP_TIME_US = AGING_TIME_US / 5;
 
 const u16 TYPE_IPV4 = 0x800;
 const u16 TYPE_METADATA = SHARED_TYPE_METADATA;
@@ -114,7 +114,8 @@ wait_entry_t wait_set_head;
 typedef unsigned short hh_cnt_t;
 heavy_hitter_t<hh_cnt_t, flow_entry_t*, 8, 4096, SHARED_AGING_TIME_US/10> heavy_hitter[SWITCH_FLOW_NUM];
 
-int pkt_cnt, update_cnt;
+int pkt_cnt, update_cnt, wait_set_size;
+int wait_set_inc, wait_set_dec;
 
 template<typename T>
 flow_num_t get_index(const T &data)
@@ -136,6 +137,10 @@ flow_entry_t* heavy_hitter_get(flow_num_t id_index)
     }
         
     flow_entry_t *entry = heavy_hitter[id_index].entry[0].id;
+    if(entry->map.id.protocol == 0 && heavy_hitter[id_index].size >= 2) {
+        entry = heavy_hitter[id_index].entry[1].id;
+    }
+    
     if(entry->type == list_type::inuse) {
         for(size_t i = 0; i < heavy_hitter[id_index].size; i++) {
             debug_printf("%d ", (int)heavy_hitter[id_index].entry[i].cnt);
@@ -274,12 +279,15 @@ void send_update(flow_num_t index, queue_process_buf *queue)
 // TODO
 void try_add_update(flow_num_t wait_set_index, metadata_t &metadata, host_time_t timestamp, queue_process_buf *queue)
 {
+    flow_entry_t *old_entry = sw_entry[wait_set_index];
+    flow_entry_t *new_entry;
+
+    if(wait_set_size >= UPDATE_QUEUE_SIZE) return;
+
     if(!wait_set[wait_set_index].is_waiting && 
         (timestamp - wait_set[wait_set_index].last_req_time_host >= SWAP_TIME_US || 
-        sw_entry[wait_set_index]->map.id.protocol == 0)) {
+        old_entry->map.id.protocol == 0)) {
         
-        flow_entry_t *old_entry = sw_entry[wait_set_index];
-        flow_entry_t *new_entry;
         if(old_entry->map.id.protocol == 0) {
             new_entry = heavy_hitter_get(wait_set_index);
             if(new_entry == NULL) return;
@@ -330,6 +338,8 @@ void try_add_update(flow_num_t wait_set_index, metadata_t &metadata, host_time_t
         //assert(ret.second);
 
         list_insert_before(&wait_set_head, &wait_set[wait_set_index]);// == push_back
+        wait_set_size ++;
+        wait_set_inc ++;
         send_update(wait_set_index, queue);
     }
 }
@@ -453,6 +463,7 @@ void process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf *que
 #endif
 // send back
     send_back(buf, queue);
+    pkt_cnt++;
 }
 
 void ack_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf *queue)
@@ -512,6 +523,8 @@ void ack_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf 
     wait_entry->is_waiting = 0;
 
     list_erase(wait_entry);
+    wait_set_size --;
+    wait_set_dec ++;
 
     if(update_flag == reject_flag) {// reject
         if(entry_sw->map.id.protocol != 0) {
@@ -579,11 +592,12 @@ void nf_aging(host_time_t timestamp)
         entry->type = list_type::avail;
         auto erase_res = id_map.erase(entry->map.id);
         assert(erase_res == 1); 
+        memset(&entry->map.id, 0, sizeof(entry->map.id));
     }
     // for debug
     static host_time_t last_timestamp = 0;
     if(timestamp - last_timestamp < 1000000) return; 
-    printf("process: %.2lf mpps\nupdate: %.2lf kpps\n", 
+    printf("process f/b: %.2lf mpps\nupdate: %.2lf kpps\n", 
         1.0*pkt_cnt/(timestamp - last_timestamp), 
         1e3*update_cnt/(timestamp - last_timestamp));
     update_cnt = 0;
@@ -602,17 +616,21 @@ void nf_aging(host_time_t timestamp)
     }
     debug_printf("new\n");
     printf("%d active flows\n", cnt);
+    printf("update set size: %d, inc: %d, dec: %d\n\n", wait_set_size, wait_set_inc, wait_set_dec);
+    wait_set_inc = 0;
+    wait_set_dec = 0;
 }
 
 void report_wait_time_too_long()
 {
-    fprintf(stderr, "Wait time too long!");
+    fprintf(stderr, "Wait time too long!\n\
+You may reset the values of time in C++ codes to avoid this happen.\n");
     exit(0);
 }
 
 void nf_update(host_time_t timestamp, queue_process_buf *queue)
 {
-    while(!list_empty(&wait_set_head))
+    for(int i = 0; i < UPDATE_TX_LIMIT && !list_empty(&wait_set_head); i++)
     {
         wait_entry_t *entry = list_front(&wait_set_head);
         if(timestamp - entry->last_req_time_host <= WAIT_TIME_US) break;
@@ -670,8 +688,6 @@ void nf_process(host_time_t timestamp, struct rte_mbuf *buf, queue_process_buf *
     }
     
     if(ntohl(hdr->metadata.index) >= SWITCH_FLOW_NUM) {queue->drop(buf); return;}
-
-    pkt_cnt++;
 
     if(hdr->metadata.type == 6)
         ack_process(timestamp, buf, queue);
